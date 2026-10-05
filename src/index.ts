@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * arduino-mcp v3.0.0
- * MCP server for Arduino IDE & arduino-cli
+ * arduino-mcp v3.1.0
+ * Universal MCP server for Arduino IDE & arduino-cli
+ * Supports: AVR (Uno/Mega/Nano), ESP32, ESP32-S3, ESP8266, RP2040, STM32, and more
  * https://github.com/birusk/arduino-mcp
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,9 +11,9 @@ import { z } from "zod";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs/promises";
+import * as fss from "fs";
 import * as path from "path";
 import * as os from "os";
-import * as net from "net";
 
 const execAsync = promisify(exec);
 
@@ -22,15 +23,45 @@ const ARDUINO_CLI = process.env.ARDUINO_CLI_PATH || "arduino-cli";
 const SKETCHES_DIR = process.env.ARDUINO_SKETCHES_DIR || path.join(os.homedir(), "Arduino");
 const CONFIG_FILE = path.join(os.homedir(), ".arduino-mcp.json");
 
-// UART bridge chips (upload-only)
-const UPLOAD_VENDORS = new Set(["1a86", "10c4", "0403", "2341", "1a86"]);
-// ESP32-S3/S2 native USB (monitor only by default)
-const NATIVE_USB_VENDOR = "303a";
+// USB-UART bridge chips → upload port only
+const UPLOAD_VENDORS = new Set([
+  "1a86", // CH340/CH341/CH343 (most ESP32/Arduino clones)
+  "10c4", // CP2102 (Silicon Labs)
+  "0403", // FTDI FT232
+  "2341", // Official Arduino (Uno R3, Mega etc via ATmega16U2)
+  "2a03", // Arduino.org
+  "1b4f", // Sparkfun
+  "239a", // Adafruit
+]);
+
+// Native USB devices — monitor port (or upload via USB DFU/CDC)
+const NATIVE_USB_VENDORS = new Set([
+  "303a", // Espressif native (ESP32-S2/S3)
+  "2341", // Arduino native USB (Leonardo, Micro, Zero) — also in UPLOAD_VENDORS for Uno
+  "2a03", // Arduino.org native
+  "1b4f", // Sparkfun native
+  "239a", // Adafruit native
+  "2e8a", // Raspberry Pi (RP2040)
+]);
+
+// Platform families
+const PLATFORM_FAMILIES: Record<string, string> = {
+  "arduino:avr": "avr",
+  "arduino:megaavr": "avr",
+  "arduino:samd": "samd",
+  "arduino:sam": "sam",
+  "arduino:mbed": "mbed",
+  "arduino:mbed_rp2040": "rp2040",
+  "esp32:esp32": "esp32",
+  "arduino:esp32": "esp32",
+  "rp2040:rp2040": "rp2040",
+};
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface BoardConfig {
   fqbn: string;
+  family: string; // avr | esp32 | rp2040 | samd | ...
   uploadPort: string;
   monitorPort: string;
   flashSize?: string;
@@ -54,6 +85,16 @@ interface CompileError {
   message: string;
 }
 
+interface DetectedPort {
+  port: string;
+  vendor: string;
+  product: string;
+  serial: string;
+  modelName: string;
+  role: "upload" | "monitor" | "both";
+  isNativeUSB: boolean;
+}
+
 // ─── Config helpers ──────────────────────────────────────────────────────────
 
 async function loadConfig(): Promise<Config> {
@@ -69,7 +110,20 @@ async function saveConfig(cfg: Config): Promise<void> {
   await fs.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8");
 }
 
+function getPlatformFamily(fqbn: string): string {
+  const prefix = fqbn.split(":").slice(0, 2).join(":");
+  return PLATFORM_FAMILIES[prefix] || "unknown";
+}
+
 function buildFqbn(board: BoardConfig): string {
+  // AVR boards don't support ESP32-specific options
+  if (board.family === "avr" || board.family === "samd" || board.family === "rp2040") {
+    const opts: string[] = [];
+    if (board.uploadSpeed) opts.push(`cpu=${board.uploadSpeed}`);
+    return opts.length > 0 ? `${board.fqbn}:${opts.join(",")}` : board.fqbn;
+  }
+
+  // ESP32 family options
   const opts: string[] = [];
   if (board.cdcOnBoot) opts.push(`CDCOnBoot=${board.cdcOnBoot}`);
   if (board.flashSize) opts.push(`FlashSize=${board.flashSize}`);
@@ -77,6 +131,25 @@ function buildFqbn(board: BoardConfig): string {
   if (board.partitionScheme) opts.push(`PartitionScheme=${board.partitionScheme}`);
   if (board.uploadSpeed) opts.push(`UploadSpeed=${board.uploadSpeed}`);
   return opts.length > 0 ? `${board.fqbn}:${opts.join(",")}` : board.fqbn;
+}
+
+function getDefaultBoardSettings(fqbn: string): Partial<BoardConfig> {
+  const family = getPlatformFamily(fqbn);
+  const isS3 = fqbn.includes("s3");
+  const isS2 = fqbn.includes("s2");
+  const isC3 = fqbn.includes("c3");
+
+  if (family === "esp32") {
+    return {
+      family,
+      cdcOnBoot: (isS3 || isS2 || isC3) ? "default" : undefined,
+      flashSize: "4M",
+      psram: isS3 ? "opi" : isS2 ? "qspi" : undefined,
+      uploadSpeed: "921600",
+    };
+  }
+
+  return { family };
 }
 
 // ─── Shell helpers ───────────────────────────────────────────────────────────
@@ -119,62 +192,88 @@ async function fixPortPermission(port: string): Promise<void> {
 
 function parseCompileErrors(output: string): CompileError[] {
   const errors: CompileError[] = [];
-  // Match: /path/file.ino:LINE:COL: error: MESSAGE
-  const re = /^(.+?):(\d+):(\d+):\s+error:\s+(.+)$/gm;
+  // Handles both: file.ino:LINE:COL: error: MSG and file.cpp:LINE: error: MSG
+  const re = /^(.+?):(\d+):(?:(\d+):)?\s+error:\s+(.+)$/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(output)) !== null) {
     errors.push({
       file: path.basename(m[1]),
       line: parseInt(m[2]),
-      col: parseInt(m[3]),
+      col: m[3] ? parseInt(m[3]) : 0,
       message: m[4].trim(),
     });
   }
   return errors;
 }
 
-function formatCompileErrors(errors: CompileError[]): string {
-  if (errors.length === 0) return "";
-  return (
-    "\n\n🔴 Derleme Hataları:\n" +
-    errors
-      .map((e) => `  ${e.file}:${e.line}:${e.col} — ${e.message}`)
-      .join("\n")
-  );
+function formatCompileResult(ok: boolean, stdout: string, stderr: string, fqbn: string): string {
+  const combined = stdout + "\n" + stderr;
+  const errors = parseCompileErrors(combined);
+  const icon = ok ? "✅" : "❌";
+  const status = `${icon} Derleme ${ok ? "başarılı" : "başarısız"} (${fqbn})`;
+
+  if (ok) {
+    // Extract size info
+    const sizeMatch = combined.match(/Sketch uses[\s\S]*?Maximum is[^\n]*/g);
+    return [status, sizeMatch ? sizeMatch[0] : ""].filter(Boolean).join("\n");
+  }
+
+  if (errors.length > 0) {
+    const errLines = errors.map((e) =>
+      `  ❌ ${e.file}:${e.line}${e.col ? ":" + e.col : ""} — ${e.message}`
+    );
+    return [status, "\nHatalar:", ...errLines].join("\n");
+  }
+
+  return [status, combined].filter(Boolean).join("\n").trim();
 }
 
-// ─── Auto-detect ─────────────────────────────────────────────────────────────
-
-interface DetectedPort {
-  port: string;
-  vendor: string;
-  product: string;
-  serial: string;
-  modelName: string;
-  role: "upload" | "monitor" | "both";
-}
+// ─── Auto-detect ports ────────────────────────────────────────────────────────
 
 async function detectPorts(): Promise<DetectedPort[]> {
-  const devList = await runCmd("ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null");
+  const devList = await runCmd("ls /dev/ttyACM* /dev/ttyUSB* /dev/ttyS[0-9]* 2>/dev/null");
   if (!devList.stdout) return [];
 
   const ports: DetectedPort[] = [];
   for (const port of devList.stdout.split("\n").filter(Boolean)) {
+    // Skip bare ttyS ports that have no USB backing
+    if (port.match(/\/dev\/ttyS\d+$/)) {
+      const udevCheck = await runCmd(`udevadm info --query=property --name=${port} 2>/dev/null | grep ID_BUS`);
+      if (!udevCheck.stdout.includes("usb")) continue;
+    }
+
     const udev = await runCmd(`udevadm info --query=all --name=${port} 2>/dev/null`);
     if (!udev.ok) continue;
 
     const vendor = udev.stdout.match(/ID_VENDOR_ID=([0-9a-f]+)/i)?.[1]?.toLowerCase() || "";
     const product = udev.stdout.match(/ID_MODEL_ID=([0-9a-f]+)/i)?.[1]?.toLowerCase() || "";
     const serial = udev.stdout.match(/ID_SERIAL_SHORT=([^\n]+)/)?.[1]?.trim() || "";
-    const modelName = udev.stdout.match(/ID_MODEL=([^\n]+)/)?.[1]?.trim() || "";
+    const modelName = udev.stdout.match(/ID_MODEL=([^\n]+)/)?.[1]?.trim().replace(/_/g, " ") || "";
 
     if (!vendor) continue;
 
-    let role: DetectedPort["role"] = "both";
-    if (UPLOAD_VENDORS.has(vendor)) role = "upload";
-    else if (vendor === NATIVE_USB_VENDOR) role = "monitor";
+    const isUploadVendor = UPLOAD_VENDORS.has(vendor);
+    const isNativeUSB = NATIVE_USB_VENDORS.has(vendor);
 
-    ports.push({ port, vendor, product, serial, modelName, role });
+    // Determine role:
+    // - Pure UART bridges (CH340 etc) with product not matching Arduino native → upload only
+    // - ESP32-S3 native USB (303a) → monitor only (upload via UART bridge)
+    // - Arduino Leonardo/Micro/Zero native USB → both (single port)
+    // - Standard Arduino Uno via ATmega16U2 (2341:0043 etc) → both
+    let role: DetectedPort["role"] = "both";
+
+    if (vendor === "1a86") {
+      // CH340/CH341/CH343 — pure UART bridge, upload only
+      role = "upload";
+    } else if (vendor === "303a") {
+      // Espressif native USB — monitor only (paired with CH343 for upload)
+      role = "monitor";
+    } else if (vendor === "2341" || vendor === "2a03") {
+      // Could be Uno (ATmega16U2, both) or Leonardo (native, both)
+      role = "both";
+    }
+
+    ports.push({ port, vendor, product, serial, modelName, role, isNativeUSB });
   }
   return ports;
 }
@@ -189,13 +288,21 @@ async function autoDetect(): Promise<{
   const ports = await detectPorts();
   if (ports.length === 0) return null;
 
-  const uploadPort = ports.find((p) => p.role === "upload" || p.role === "both");
-  const monitorPort = ports.find((p) => p.role === "monitor" || p.role === "both");
+  // Prefer dedicated upload port, fall back to "both"
+  const uploadPort =
+    ports.find((p) => p.role === "upload") ||
+    ports.find((p) => p.role === "both");
 
-  const up = uploadPort || monitorPort;
-  const mp = monitorPort || uploadPort;
-  if (!up || !mp) return null;
+  const monitorPort =
+    ports.find((p) => p.role === "monitor") ||
+    ports.find((p) => p.role === "both");
 
+  if (!uploadPort && !monitorPort) return null;
+
+  const up = uploadPort || monitorPort!;
+  const mp = monitorPort || uploadPort!;
+
+  // Try arduino-cli board list for FQBN
   const boardList = await runCmd(`${ARDUINO_CLI} board list 2>/dev/null`);
   let fqbn: string | undefined;
   let boardName: string | undefined;
@@ -203,7 +310,7 @@ async function autoDetect(): Promise<{
   if (boardList.ok) {
     for (const line of boardList.stdout.split("\n")) {
       if (line.includes(up.port) || line.includes(mp.port)) {
-        const match = line.match(/(esp32:\S+|arduino:\S+)/);
+        const match = line.match(/([\w-]+:[\w-]+:[\w-]+)/);
         if (match) fqbn = match[0];
         const parts = line.trim().split(/\s{2,}/);
         if (parts.length >= 3) boardName = parts[2];
@@ -214,7 +321,7 @@ async function autoDetect(): Promise<{
   return {
     uploadPort: up.port,
     monitorPort: mp.port,
-    serial: up.serial || mp.serial,
+    serial: up.serial || mp.serial || `${up.vendor}:${up.product}`,
     fqbn,
     boardName,
   };
@@ -224,7 +331,7 @@ async function autoDetect(): Promise<{
 
 const server = new McpServer({
   name: "arduino-mcp",
-  version: "3.0.0",
+  version: "3.1.0",
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -233,13 +340,13 @@ const server = new McpServer({
 
 server.tool(
   "detect_board",
-  "Bağlı Arduino/ESP32 kartını otomatik tanır. Upload ve monitor portlarını ayrı ayrı tespit eder (ESP32-S3 dual-USB dahil). Kart bilgilerini hafızaya kaydeder.",
+  "Bağlı kartı otomatik tanır ve hafızaya kaydeder. AVR (Uno/Mega/Nano), ESP32, ESP32-S3, RP2040, SAMD ve tüm diğer Arduino kartları desteklenir. ESP32-S3 dual-USB'yi otomatik çözer.",
   { save: z.boolean().default(true).describe("Kartı hafızaya kaydet") },
   async ({ save }) => {
     const detected = await autoDetect();
     if (!detected) {
       return {
-        content: [{ type: "text", text: "❌ Bağlı kart bulunamadı. USB kablosunu kontrol et." }],
+        content: [{ type: "text", text: "❌ Bağlı kart bulunamadı.\n\nKontrol et:\n• USB kablosu takılı mı?\n• Kablo data destekliyor mu? (sadece şarj değil)\n• COM portuna takılı mı? (ESP32-S3 için)" }],
       };
     }
 
@@ -248,16 +355,15 @@ server.tool(
       const serial = detected.serial || `unknown_${Date.now()}`;
       const cfg = await loadConfig();
       const baseFqbn = detected.fqbn?.split(":").slice(0, 3).join(":") || "esp32:esp32:esp32s3";
-      const isS3 = baseFqbn.includes("s3");
+      const defaults = getDefaultBoardSettings(baseFqbn);
 
       cfg.boards[serial] = {
         fqbn: baseFqbn,
+        family: defaults.family || "unknown",
         uploadPort: detected.uploadPort,
         monitorPort: detected.monitorPort,
-        cdcOnBoot: "default",
-        flashSize: "16M",
-        psram: isS3 ? "opi" : undefined,
         boardName: detected.boardName,
+        ...defaults,
         lastSeen: new Date().toISOString(),
       };
       cfg.defaultBoard = serial;
@@ -265,18 +371,21 @@ server.tool(
       savedMsg = "\n✅ Kart hafızaya kaydedildi.";
     }
 
+    const samePort = detected.uploadPort === detected.monitorPort;
     return {
       content: [{
         type: "text",
         text: [
           "🔍 Kart Tespit Edildi",
-          `Kart:          ${detected.boardName || "Bilinmiyor"}`,
-          `FQBN:          ${detected.fqbn || "Tespit edilemedi"}`,
-          `Upload Port:   ${detected.uploadPort}`,
-          `Monitor Port:  ${detected.monitorPort}`,
-          `Seri No:       ${detected.serial || "Bilinmiyor"}`,
+          `Kart:         ${detected.boardName || "Bilinmiyor"}`,
+          `FQBN:         ${detected.fqbn || "Tespit edilemedi"}`,
+          samePort
+            ? `Port:         ${detected.uploadPort} (upload + monitor)`
+            : `Upload Port:  ${detected.uploadPort}`,
+          samePort ? "" : `Monitor Port: ${detected.monitorPort}`,
+          `Seri No:      ${detected.serial || "Bilinmiyor"}`,
           savedMsg,
-        ].filter(Boolean).join("\n"),
+        ].filter((l) => l !== undefined && l !== "").join("\n"),
       }],
     };
   }
@@ -284,17 +393,17 @@ server.tool(
 
 server.tool(
   "board_config",
-  "Kayıtlı kart ayarlarını göster veya güncelle. Tüm FQBN seçenekleri (flash, psram, cdc, partition, upload speed) ayarlanabilir.",
+  "Kayıtlı kart ayarlarını göster veya güncelle. AVR'de cpu_speed, ESP32'de flash/psram/cdc/partition desteklenir.",
   {
-    action: z.enum(["show", "set"]).default("show").describe("show: göster, set: güncelle"),
-    fqbn: z.string().optional().describe("Kart FQBN (ör: esp32:esp32:esp32s3)"),
-    upload_port: z.string().optional().describe("Upload portu (ör: /dev/ttyACM1)"),
-    monitor_port: z.string().optional().describe("Monitor portu (ör: /dev/ttyACM0)"),
-    flash_size: z.string().optional().describe("Flash boyutu: 2M | 4M | 8M | 16M"),
-    psram: z.string().optional().describe("PSRAM: opi | qspi | disabled"),
-    cdc_on_boot: z.string().optional().describe("CDCOnBoot: default | cdc | disabled"),
-    partition_scheme: z.string().optional().describe("Partition: default | huge_app | min_spiffs | no_ota"),
-    upload_speed: z.string().optional().describe("Upload hızı: 921600 | 460800 | 230400 | 115200"),
+    action: z.enum(["show", "set"]).default("show"),
+    fqbn: z.string().optional().describe("Kart FQBN (ör: arduino:avr:uno, esp32:esp32:esp32s3)"),
+    upload_port: z.string().optional().describe("Upload portu"),
+    monitor_port: z.string().optional().describe("Monitor portu"),
+    flash_size: z.string().optional().describe("Flash (ESP32 only): 2M | 4M | 8M | 16M"),
+    psram: z.string().optional().describe("PSRAM (ESP32 only): opi | qspi | disabled"),
+    cdc_on_boot: z.string().optional().describe("CDCOnBoot (ESP32-S3/S2 only): default | cdc"),
+    partition_scheme: z.string().optional().describe("Partition (ESP32 only): default | huge_app | min_spiffs | no_ota"),
+    upload_speed: z.string().optional().describe("Upload hızı: 921600 | 460800 | 115200"),
   },
   async ({ action, fqbn, upload_port, monitor_port, flash_size, psram, cdc_on_boot, partition_scheme, upload_speed }) => {
     const cfg = await loadConfig();
@@ -304,6 +413,7 @@ server.tool(
         return { content: [{ type: "text", text: '❌ Kayıtlı kart yok. Önce "detect_board" çalıştır.' }] };
       }
       const b = cfg.boards[cfg.defaultBoard];
+      const isAvr = b.family === "avr";
       return {
         content: [{
           type: "text",
@@ -311,16 +421,17 @@ server.tool(
             "📋 Kayıtlı Kart Ayarları",
             `Seri No:        ${cfg.defaultBoard}`,
             `Kart:           ${b.boardName || "Bilinmiyor"}`,
+            `Platform:       ${b.family}`,
             `FQBN:           ${buildFqbn(b)}`,
             `Upload Port:    ${b.uploadPort}`,
             `Monitor Port:   ${b.monitorPort}`,
-            `Flash:          ${b.flashSize || "varsayılan"}`,
-            `PSRAM:          ${b.psram || "varsayılan"}`,
-            `CDC on Boot:    ${b.cdcOnBoot || "varsayılan"}`,
-            `Partition:      ${b.partitionScheme || "varsayılan"}`,
-            `Upload Speed:   ${b.uploadSpeed || "921600"}`,
+            isAvr ? null : `Flash:          ${b.flashSize || "varsayılan"}`,
+            isAvr ? null : `PSRAM:          ${b.psram || "yok"}`,
+            isAvr ? null : `CDC on Boot:    ${b.cdcOnBoot || "varsayılan"}`,
+            isAvr ? null : `Partition:      ${b.partitionScheme || "varsayılan"}`,
+            `Upload Speed:   ${b.uploadSpeed || "varsayılan"}`,
             `Son Görülme:    ${b.lastSeen}`,
-          ].join("\n"),
+          ].filter((l) => l !== null).join("\n"),
         }],
       };
     }
@@ -328,9 +439,8 @@ server.tool(
     if (!cfg.defaultBoard) {
       return { content: [{ type: "text", text: '❌ Önce "detect_board" çalıştır.' }] };
     }
-
     const b = cfg.boards[cfg.defaultBoard];
-    if (fqbn) b.fqbn = fqbn.split(":").slice(0, 3).join(":");
+    if (fqbn) { b.fqbn = fqbn.split(":").slice(0, 3).join(":"); b.family = getPlatformFamily(b.fqbn); }
     if (upload_port) b.uploadPort = upload_port;
     if (monitor_port) b.monitorPort = monitor_port;
     if (flash_size) b.flashSize = flash_size;
@@ -352,19 +462,15 @@ server.tool(
 
 server.tool(
   "board_options",
-  "Bir kart için mevcut tüm FQBN seçeneklerini listeler (flash boyutu, psram, cdc, partition vb.)",
-  {
-    fqbn: z.string().optional().describe("Kart FQBN (belirtilmezse kayıtlı kart)"),
-  },
+  "Bir kart için mevcut tüm FQBN seçeneklerini listeler (flash, psram, cpu speed, bootloader vb.)",
+  { fqbn: z.string().optional().describe("Kart FQBN (opsiyonel, belirtilmezse kayıtlı kart)") },
   async ({ fqbn }) => {
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedFqbn = fqbn || (board ? board.fqbn : null);
-
     if (!resolvedFqbn) {
       return { content: [{ type: "text", text: '❌ FQBN bulunamadı. Önce "detect_board" çalıştır.' }] };
     }
-
     const r = await runCmd(`${ARDUINO_CLI} board details --fqbn ${resolvedFqbn} 2>&1`);
     return { content: [{ type: "text", text: r.stdout || r.stderr }] };
   }
@@ -372,79 +478,60 @@ server.tool(
 
 server.tool(
   "list_boards",
-  "Bağlı tüm Arduino/ESP32 kartlarını, portlarını ve rollerini listeler (upload/monitor ayrımıyla)",
+  "Bağlı tüm kartları ve portlarını listeler. Upload/monitor rollerini ayrı gösterir.",
   {},
   async () => {
     const ports = await detectPorts();
     const cliList = await runCmd(`${ARDUINO_CLI} board list 2>&1`);
-
-    const lines: string[] = ["🔌 Bağlı Portlar:\n"];
-
+    const lines: string[] = ["🔌 Tespit Edilen Portlar:\n"];
     if (ports.length === 0) {
       lines.push("  Bağlı cihaz yok.");
     } else {
       for (const p of ports) {
-        lines.push(`  ${p.port}  [${p.role}]  ${p.modelName || p.vendor + ":" + p.product}  SN:${p.serial || "?"}`);
+        const roleLabel = p.role === "upload" ? "📤 upload" : p.role === "monitor" ? "📡 monitor" : "📤📡 upload+monitor";
+        lines.push(`  ${p.port}  [${roleLabel}]  ${p.modelName || p.vendor + ":" + p.product}  SN:${p.serial || "?"}`);
       }
     }
-
     if (cliList.ok && cliList.stdout) {
       lines.push("\n📋 arduino-cli board list:");
       lines.push(cliList.stdout);
     }
-
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
 
 server.tool(
   "board_info",
-  "Bağlı kartın detaylı bilgisini gösterir (chip, flash, PSRAM, MAC, revision)",
-  {
-    port: z.string().optional().describe("Port (opsiyonel, varsayılan kayıtlı upload port)"),
-  },
+  "Bağlı kartın detaylı bilgisini gösterir (chip, flash, MAC, revision)",
+  { port: z.string().optional().describe("Port (opsiyonel)") },
   async ({ port }) => {
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedPort = port || board?.uploadPort || "/dev/ttyACM0";
-
     await fixPortPermission(resolvedPort);
-
     const r = await runCmd(`${ARDUINO_CLI} board info --port ${resolvedPort} 2>&1`);
     if (r.ok && r.stdout) return { content: [{ type: "text", text: r.stdout }] };
-
-    // Fallback: udevadm
-    const udev = await runCmd(
-      `udevadm info --query=all --name=${resolvedPort} 2>&1 | grep -E "ID_VENDOR|ID_MODEL|ID_SERIAL|ID_USB"`
-    );
-    const lsusb = await runCmd("lsusb 2>/dev/null | grep -iE '303a|1a86|2341|10c4|0403'");
-    return {
-      content: [{
-        type: "text",
-        text: [udev.stdout, lsusb.stdout].filter(Boolean).join("\n") || "Kart bilgisi alınamadı.",
-      }],
-    };
+    const udev = await runCmd(`udevadm info --query=all --name=${resolvedPort} 2>&1 | grep -E "ID_VENDOR|ID_MODEL|ID_SERIAL|ID_USB"`);
+    return { content: [{ type: "text", text: udev.stdout || "Kart bilgisi alınamadı." }] };
   }
 );
 
 server.tool(
   "erase_flash",
-  "ESP32/ESP8266 kartının tüm flash belleğini siler. Dikkat: tüm veriler silinir!",
-  {
-    port: z.string().optional().describe("Port (opsiyonel)"),
-  },
+  "ESP32/ESP8266 flash belleğini tamamen siler. NOT: AVR kartlar için desteklenmez.",
+  { port: z.string().optional().describe("Port (opsiyonel)") },
   async ({ port }) => {
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
-    const resolvedPort = port || board?.uploadPort || "/dev/ttyACM0";
 
+    if (board && board.family === "avr") {
+      return { content: [{ type: "text", text: "❌ Flash silme AVR kartlar için desteklenmiyor. Arduino Uno/Mega/Nano'da erase_flash kullanılamaz." }] };
+    }
+
+    const resolvedPort = port || board?.uploadPort || "/dev/ttyACM0";
     await freePort(resolvedPort);
     await fixPortPermission(resolvedPort);
-
-    const r = await runCmd(
-      `esptool.py --port ${resolvedPort} erase_flash 2>&1`,
-      60000
-    );
+    const r = await runCmd(`esptool.py --port ${resolvedPort} erase_flash 2>&1`, 60000);
     const icon = r.ok ? "✅" : "❌";
     return {
       content: [{ type: "text", text: `${icon} Flash silme ${r.ok ? "tamamlandı" : "başarısız"}:\n${r.stdout}\n${r.stderr}`.trim() }],
@@ -458,7 +545,7 @@ server.tool(
 
 server.tool(
   "list_sketches",
-  "~/Arduino klasöründeki tüm sketch'leri listeler (son değiştirilme tarihleriyle)",
+  "~/Arduino klasöründeki tüm sketch'leri son değiştirme tarihleriyle listeler",
   {},
   async () => {
     try {
@@ -466,25 +553,18 @@ server.tool(
       const entries = await fs.readdir(SKETCHES_DIR, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory());
       if (dirs.length === 0) return { content: [{ type: "text", text: "Henüz hiç sketch yok." }] };
-
       const lines = await Promise.all(
         dirs.map(async (d) => {
           const inoFile = path.join(SKETCHES_DIR, d.name, `${d.name}.ino`);
           try {
             const stat = await fs.stat(inoFile);
-            return `  • ${d.name.padEnd(30)} ${stat.mtime.toLocaleDateString("tr-TR")}`;
+            return `  • ${d.name.padEnd(32)} ${stat.mtime.toLocaleDateString("tr-TR")}`;
           } catch {
             return `  • ${d.name}`;
           }
         })
       );
-
-      return {
-        content: [{
-          type: "text",
-          text: `Sketch'ler (${SKETCHES_DIR}):\n${lines.join("\n")}`,
-        }],
-      };
+      return { content: [{ type: "text", text: `Sketch'ler (${SKETCHES_DIR}):\n${lines.join("\n")}` }] };
     } catch (e: unknown) {
       return { content: [{ type: "text", text: `Hata: ${(e as Error).message}` }] };
     }
@@ -493,11 +573,11 @@ server.tool(
 
 server.tool(
   "create_sketch",
-  "Yeni Arduino sketch'i oluşturur. Şablon olarak blink, wifi, mqtt, sensor seçilebilir.",
+  "Yeni Arduino sketch'i oluşturur. Şablonlar: blink, wifi, mqtt, sensor, servo, i2c_scan, empty, custom",
   {
     name: z.string().describe("Sketch adı"),
-    template: z.enum(["blink", "wifi", "mqtt", "sensor", "empty", "custom"]).default("blink").describe("Başlangıç şablonu"),
-    code: z.string().optional().describe("Özel kod (template=custom ise kullanılır)"),
+    template: z.enum(["blink", "wifi", "mqtt", "sensor", "servo", "i2c_scan", "empty", "custom"]).default("blink"),
+    code: z.string().optional().describe("Özel kod (template=custom için)"),
   },
   async ({ name, template, code }) => {
     const safeName = name.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -507,25 +587,28 @@ server.tool(
     const templates: Record<string, string> = {
       empty: `// ${safeName}\n\nvoid setup() {\n}\n\nvoid loop() {\n}\n`,
       blink: `// ${safeName} — Blink
-#define LED_PIN 2
+// Works on: Uno, Mega, Nano (pin 13), ESP32 (pin 2)
+#ifndef LED_BUILTIN
+  #define LED_BUILTIN 2
+#endif
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
   Serial.println("${safeName} started!");
 }
 
 void loop() {
-  digitalWrite(LED_PIN, HIGH);
+  digitalWrite(LED_BUILTIN, HIGH);
   delay(500);
-  digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_BUILTIN, LOW);
   delay(500);
 }
 `,
-      wifi: `// ${safeName} — WiFi Connect
+      wifi: `// ${safeName} — WiFi Connect (ESP32/ESP8266)
 #include <WiFi.h>
 
-const char* ssid = "YOUR_SSID";
+const char* ssid     = "YOUR_SSID";
 const char* password = "YOUR_PASSWORD";
 
 void setup() {
@@ -537,7 +620,7 @@ void setup() {
     Serial.print(".");
   }
   Serial.println();
-  Serial.print("IP: ");
+  Serial.print("Connected! IP: ");
   Serial.println(WiFi.localIP());
 }
 
@@ -545,31 +628,32 @@ void loop() {
   delay(1000);
 }
 `,
-      mqtt: `// ${safeName} — MQTT
+      mqtt: `// ${safeName} — MQTT (ESP32)
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+const char* ssid        = "YOUR_SSID";
+const char* password    = "YOUR_PASSWORD";
 const char* mqtt_server = "broker.hivemq.com";
+const int topic_in  = "devices/esp32/cmd";
+const char* topic_out = "devices/esp32/data";
 
-WiFiClient espClient;
+WiFiClient   espClient;
 PubSubClient client(espClient);
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  for (unsigned int i = 0; i < length; i++) Serial.print((char)payload[i]);
-  Serial.println();
+  String msg;
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  Serial.println("MSG [" + String(topic) + "]: " + msg);
 }
 
 void reconnect() {
   while (!client.connected()) {
     if (client.connect("ESP32Client")) {
-      client.subscribe("test/topic");
+      client.subscribe(topic_in);
+      Serial.println("MQTT connected");
     } else {
-      delay(5000);
+      delay(3000);
     }
   }
 }
@@ -578,6 +662,7 @@ void setup() {
   Serial.begin(115200);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.print("IP: "); Serial.println(WiFi.localIP());
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
 }
@@ -585,36 +670,90 @@ void setup() {
 void loop() {
   if (!client.connected()) reconnect();
   client.loop();
-  client.publish("test/topic", "Hello from ESP32!");
-  delay(5000);
+  static unsigned long last = 0;
+  if (millis() - last > 5000) {
+    last = millis();
+    client.publish(topic_out, String(millis()).c_str());
+  }
 }
 `,
-      sensor: `// ${safeName} — Sensor Read
-#define SENSOR_PIN 34  // Analog pin
+      sensor: `// ${safeName} — Analog Sensor Read
+// Works on: Uno (A0-A5), ESP32 (34,35,36,39)
+#ifdef ESP32
+  #define SENSOR_PIN 34
+#else
+  #define SENSOR_PIN A0
+#endif
 
 void setup() {
   Serial.begin(115200);
-  pinMode(SENSOR_PIN, INPUT);
   Serial.println("Sensor ready");
 }
 
 void loop() {
-  int value = analogRead(SENSOR_PIN);
-  float voltage = value * (3.3 / 4095.0);
-  Serial.printf("Raw: %d  Voltage: %.2fV\\n", value, voltage);
+  int raw = analogRead(SENSOR_PIN);
+  #ifdef ESP32
+    float v = raw * (3.3f / 4095.0f);
+  #else
+    float v = raw * (5.0f / 1023.0f);
+  #endif
+  Serial.print("Raw: "); Serial.print(raw);
+  Serial.print("  V: "); Serial.println(v, 2);
   delay(1000);
 }
 `,
+      servo: `// ${safeName} — Servo Control
+#include <Servo.h>
+
+Servo myServo;
+const int SERVO_PIN = 9;  // Uno: 9, ESP32: any PWM pin
+
+void setup() {
+  Serial.begin(115200);
+  myServo.attach(SERVO_PIN);
+  Serial.println("Servo ready. Send 0-180 via Serial.");
+}
+
+void loop() {
+  if (Serial.available()) {
+    int angle = Serial.parseInt();
+    if (angle >= 0 && angle <= 180) {
+      myServo.write(angle);
+      Serial.print("Angle: "); Serial.println(angle);
+    }
+  }
+}
+`,
+      i2c_scan: `// ${safeName} — I2C Scanner
+// Finds all I2C devices on the bus
+#include <Wire.h>
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Serial.println("I2C Scanner started");
+
+  byte count = 0;
+  for (byte addr = 8; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("Found device at 0x");
+      if (addr < 16) Serial.print("0");
+      Serial.println(addr, HEX);
+      count++;
+    }
+  }
+  Serial.print("Total devices: "); Serial.println(count);
+}
+
+void loop() {}
+`,
     };
 
-    const finalCode = template === "custom" && code ? code : templates[template] || templates.blink;
+    const finalCode = (template === "custom" && code) ? code : (templates[template] || templates.blink);
     await fs.writeFile(file, finalCode, "utf-8");
-
     return {
-      content: [{
-        type: "text",
-        text: `✅ Sketch oluşturuldu: ${file}\n\n\`\`\`cpp\n${finalCode}\n\`\`\``,
-      }],
+      content: [{ type: "text", text: `✅ Sketch oluşturuldu: ${file}\n\n\`\`\`cpp\n${finalCode}\n\`\`\`` }],
     };
   }
 );
@@ -674,17 +813,14 @@ server.tool(
   async ({ old_name, new_name }) => {
     const oldDir = path.join(SKETCHES_DIR, old_name);
     const newDir = path.join(SKETCHES_DIR, new_name);
-    const oldFile = path.join(newDir, `${old_name}.ino`);
-    const newFile = path.join(newDir, `${new_name}.ino`);
-
     try {
       await fs.rename(oldDir, newDir);
-      // .ino dosyasını da yeniden adlandır
       try {
-        await fs.rename(oldFile, newFile);
-      } catch {
-        // farklı isimde olabilir, yoksay
-      }
+        await fs.rename(
+          path.join(newDir, `${old_name}.ino`),
+          path.join(newDir, `${new_name}.ino`)
+        );
+      } catch { /* ino rename optional */ }
       return { content: [{ type: "text", text: `✅ "${old_name}" → "${new_name}" olarak yeniden adlandırıldı.` }] };
     } catch (e: unknown) {
       return { content: [{ type: "text", text: `❌ Hata: ${(e as Error).message}` }] };
@@ -692,13 +828,13 @@ server.tool(
   }
 );
 
-// ════════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 // COMPILE & UPLOAD TOOLS
 // ════════════════════════════════════════════════════════════════════════════
 
 server.tool(
   "compile_sketch",
-  "Sketch'i derler. FQBN belirtilmezse kayıtlı kart ayarlarını kullanır. Hataları satır:sütun formatında gösterir.",
+  "Sketch'i derler. FQBN belirtilmezse kayıtlı kart ayarlarını kullanır. Derleme hatalarını satır:sütun formatında gösterir.",
   {
     name: z.string().describe("Sketch adı"),
     fqbn: z.string().optional().describe("Kart FQBN (opsiyonel)"),
@@ -708,28 +844,13 @@ server.tool(
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedFqbn = fqbn || (board ? buildFqbn(board) : null);
-
     if (!resolvedFqbn) {
       return { content: [{ type: "text", text: '❌ FQBN bulunamadı. Önce "detect_board" çalıştır.' }] };
     }
-
     const dir = path.join(SKETCHES_DIR, name);
     const verboseFlag = verbose ? " --verbose" : "";
-    const r = await runCmd(
-      `${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}"${verboseFlag} "${dir}" 2>&1`,
-      180000
-    );
-
-    const errors = parseCompileErrors(r.stdout + "\n" + r.stderr);
-    const errSummary = !r.ok ? formatCompileErrors(errors) : "";
-    const icon = r.ok ? "✅" : "❌";
-
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} Derleme ${r.ok ? "başarılı" : "başarısız"} (${resolvedFqbn}):\n${r.stdout}${errSummary}`.trim(),
-      }],
-    };
+    const r = await runCmd(`${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}"${verboseFlag} "${dir}" 2>&1`, 180000);
+    return { content: [{ type: "text", text: formatCompileResult(r.ok, r.stdout, r.stderr, resolvedFqbn) }] };
   }
 );
 
@@ -746,33 +867,24 @@ server.tool(
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedFqbn = fqbn || (board ? buildFqbn(board) : null);
     const resolvedPort = port || board?.uploadPort || null;
-
     if (!resolvedFqbn || !resolvedPort) {
       return { content: [{ type: "text", text: '❌ Port veya FQBN bulunamadı. Önce "detect_board" çalıştır.' }] };
     }
-
     await freePort(resolvedPort);
     await new Promise((r) => setTimeout(r, 500));
     await fixPortPermission(resolvedPort);
-
     const dir = path.join(SKETCHES_DIR, name);
-    const r = await runCmd(
-      `${ARDUINO_CLI} upload -p ${resolvedPort} --fqbn "${resolvedFqbn}" "${dir}" 2>&1`,
-      180000
-    );
+    const r = await runCmd(`${ARDUINO_CLI} upload -p ${resolvedPort} --fqbn "${resolvedFqbn}" "${dir}" 2>&1`, 180000);
     const icon = r.ok ? "✅" : "❌";
     return {
-      content: [{
-        type: "text",
-        text: `${icon} Yükleme ${r.ok ? "başarılı" : "başarısız"} → ${resolvedPort}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
+      content: [{ type: "text", text: `${icon} Yükleme ${r.ok ? "başarılı" : "başarısız"} → ${resolvedPort}:\n${r.stdout}\n${r.stderr}`.trim() }],
     };
   }
 );
 
 server.tool(
   "compile_and_upload",
-  "Sketch'i derler ve karta yükler (tek adım). En çok kullanılan araç — sadece sketch adını ver, gerisini halleder.",
+  "Sketch'i derler ve karta yükler (tek adım). Tüm kart türleri desteklenir. Kayıtlı kart ayarlarını kullanır.",
   {
     name: z.string().describe("Sketch adı"),
     fqbn: z.string().optional().describe("Kart FQBN (opsiyonel)"),
@@ -783,47 +895,25 @@ server.tool(
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedFqbn = fqbn || (board ? buildFqbn(board) : null);
     const resolvedPort = port || board?.uploadPort || null;
-
     if (!resolvedFqbn || !resolvedPort) {
       return { content: [{ type: "text", text: '❌ Port veya FQBN bulunamadı. Önce "detect_board" çalıştır.' }] };
     }
-
     const dir = path.join(SKETCHES_DIR, name);
-
-    // Derle
-    const compile = await runCmd(
-      `${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}" "${dir}" 2>&1`,
-      180000
-    );
+    const compile = await runCmd(`${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}" "${dir}" 2>&1`, 180000);
     if (!compile.ok) {
-      const errors = parseCompileErrors(compile.stdout + "\n" + compile.stderr);
-      return {
-        content: [{
-          type: "text",
-          text: `❌ Derleme başarısız:\n${compile.stdout}${formatCompileErrors(errors)}`.trim(),
-        }],
-      };
+      return { content: [{ type: "text", text: formatCompileResult(false, compile.stdout, compile.stderr, resolvedFqbn) }] };
     }
-
-    // Port serbest bırak
     await freePort(resolvedPort);
     await new Promise((r) => setTimeout(r, 500));
     await fixPortPermission(resolvedPort);
-
-    // Yükle
-    const upload = await runCmd(
-      `${ARDUINO_CLI} upload -p ${resolvedPort} --fqbn "${resolvedFqbn}" "${dir}" 2>&1`,
-      180000
-    );
-
+    const upload = await runCmd(`${ARDUINO_CLI} upload -p ${resolvedPort} --fqbn "${resolvedFqbn}" "${dir}" 2>&1`, 180000);
     return {
       content: [{
         type: "text",
         text: [
-          "✅ Derleme başarılı",
+          formatCompileResult(true, compile.stdout, compile.stderr, resolvedFqbn),
           `${upload.ok ? "✅" : "❌"} Yükleme ${upload.ok ? "başarılı" : "başarısız"} → ${resolvedPort}`,
-          upload.stdout,
-          upload.stderr,
+          upload.ok ? "" : upload.stderr,
         ].filter(Boolean).join("\n"),
       }],
     };
@@ -832,7 +922,7 @@ server.tool(
 
 server.tool(
   "wifi_upload",
-  "Sketch'i WiFi üzerinden karta yükler (OTA - Over The Air). Kart WiFi'a bağlı ve ArduinoOTA kütüphanesi kurulu olmalı.",
+  "Sketch'i WiFi/OTA üzerinden karta yükler. Kart ArduinoOTA kütüphanesi ile hazırlanmış olmalı.",
   {
     name: z.string().describe("Sketch adı"),
     ip: z.string().describe("Kartın IP adresi"),
@@ -843,33 +933,24 @@ server.tool(
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedFqbn = fqbn || (board ? buildFqbn(board) : null);
-
     if (!resolvedFqbn) {
       return { content: [{ type: "text", text: '❌ FQBN bulunamadı.' }] };
     }
-
     const dir = path.join(SKETCHES_DIR, name);
-
-    // Derle
-    const compile = await runCmd(
-      `${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}" "${dir}" 2>&1`,
-      180000
-    );
+    const compile = await runCmd(`${ARDUINO_CLI} compile --fqbn "${resolvedFqbn}" "${dir}" 2>&1`, 180000);
     if (!compile.ok) {
-      return { content: [{ type: "text", text: `❌ Derleme başarısız:\n${compile.stdout}`.trim() }] };
+      return { content: [{ type: "text", text: formatCompileResult(false, compile.stdout, compile.stderr, resolvedFqbn) }] };
     }
-
-    // OTA yükle
     const passFlag = password ? `--upload-field password=${password}` : "";
-    const r = await runCmd(
-      `${ARDUINO_CLI} upload -p ${ip}:3232 --fqbn "${resolvedFqbn}" ${passFlag} "${dir}" 2>&1`,
-      120000
-    );
-    const icon = r.ok ? "✅" : "❌";
+    const r = await runCmd(`${ARDUINO_CLI} upload -p ${ip}:3232 --fqbn "${resolvedFqbn}" ${passFlag} "${dir}" 2>&1`, 120000);
     return {
       content: [{
         type: "text",
-        text: `✅ Derleme başarılı\n${icon} OTA Yükleme ${r.ok ? "başarılı" : "başarısız"} → ${ip}:\n${r.stdout}\n${r.stderr}`.trim(),
+        text: [
+          "✅ Derleme başarılı",
+          `${r.ok ? "✅" : "❌"} OTA Yükleme ${r.ok ? "başarılı" : "başarısız"} → ${ip}`,
+          r.stdout, r.stderr,
+        ].filter(Boolean).join("\n"),
       }],
     };
   }
@@ -881,7 +962,7 @@ server.tool(
 
 server.tool(
   "serial_monitor",
-  "Serial port'tan belirtilen süre boyunca veri okur. Port belirtilmezse kayıtlı monitor portunu kullanır.",
+  "Serial port'tan veri okur. Port belirtilmezse kayıtlı monitor portunu kullanır.",
   {
     port: z.string().optional().describe("Seri port (opsiyonel)"),
     baud: z.number().default(115200).describe("Baud rate"),
@@ -891,25 +972,18 @@ server.tool(
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedPort = port || board?.monitorPort || "/dev/ttyACM0";
-    const clampedSeconds = Math.min(seconds, 60);
-
     await fixPortPermission(resolvedPort);
-
+    const clampedSeconds = Math.min(seconds, 60);
     return new Promise((resolve) => {
       let output = "";
       exec(`stty -F ${resolvedPort} ${baud} raw -echo 2>/dev/null`);
       const proc = spawn("timeout", [String(clampedSeconds), "cat", resolvedPort]);
-
       proc.stdout.on("data", (d: Buffer) => { output += d.toString(); });
       proc.stderr.on("data", (d: Buffer) => { output += d.toString(); });
-
       proc.on("close", () => {
-        const clean = output
-          .split("\n")
+        const clean = output.split("\n")
           .map((l) => l.replace(/[^\x20-\x7E]/g, "").trim())
-          .filter(Boolean)
-          .join("\n");
-
+          .filter(Boolean).join("\n");
         resolve({
           content: [{
             type: "text",
@@ -925,46 +999,48 @@ server.tool(
 
 server.tool(
   "send_serial",
-  "Serial port üzerinden karta veri/komut gönderir",
+  "Serial port üzerinden karta veri/komut gönderir ve yanıtı okur",
   {
     message: z.string().describe("Gönderilecek mesaj/komut"),
     port: z.string().optional().describe("Seri port (opsiyonel)"),
     baud: z.number().default(115200).describe("Baud rate"),
     newline: z.boolean().default(true).describe("Satır sonu ekle (\\n)"),
-    read_response: z.boolean().default(true).describe("Gönderden sonra yanıt oku (2s)"),
+    read_response: z.boolean().default(true).describe("Yanıt oku (2s)"),
   },
   async ({ message, port, baud, newline, read_response }) => {
     const cfg = await loadConfig();
     const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
     const resolvedPort = port || board?.monitorPort || "/dev/ttyACM0";
-
     await fixPortPermission(resolvedPort);
 
     return new Promise((resolve) => {
       exec(`stty -F ${resolvedPort} ${baud} raw -echo 2>/dev/null`, () => {
         const data = newline ? `${message}\n` : message;
-        const fd = require("fs").openSync(resolvedPort, "r+");
-        require("fs").writeSync(fd, data);
-
-        if (read_response) {
-          let response = "";
-          const proc = spawn("timeout", ["2", "cat", resolvedPort]);
-          proc.stdout.on("data", (d: Buffer) => { response += d.toString(); });
-          proc.on("close", () => {
-            require("fs").closeSync(fd);
-            const clean = response.split("\n").map((l: string) => l.replace(/[^\x20-\x7E]/g, "").trim()).filter(Boolean).join("\n");
-            resolve({
-              content: [{
-                type: "text",
-                text: `📤 Gönderildi: "${message}"\n📥 Yanıt:\n${clean || "(yanıt yok)"}`,
-              }],
+        try {
+          const fd = fss.openSync(resolvedPort, "r+");
+          fss.writeSync(fd, data);
+          if (read_response) {
+            let response = "";
+            const proc = spawn("timeout", ["2", "cat", resolvedPort]);
+            proc.stdout.on("data", (d: Buffer) => { response += d.toString(); });
+            proc.on("close", () => {
+              fss.closeSync(fd);
+              const clean = response.split("\n")
+                .map((l: string) => l.replace(/[^\x20-\x7E]/g, "").trim())
+                .filter(Boolean).join("\n");
+              resolve({
+                content: [{
+                  type: "text",
+                  text: `📤 Gönderildi: "${message}"\n📥 Yanıt:\n${clean || "(yanıt yok)"}`,
+                }],
+              });
             });
-          });
-        } else {
-          require("fs").closeSync(fd);
-          resolve({
-            content: [{ type: "text", text: `📤 Gönderildi: "${message}"` }],
-          });
+          } else {
+            fss.closeSync(fd);
+            resolve({ content: [{ type: "text", text: `📤 Gönderildi: "${message}"` }] });
+          }
+        } catch (e: unknown) {
+          resolve({ content: [{ type: "text", text: `❌ Gönderme hatası: ${(e as Error).message}` }] });
         }
       });
     });
@@ -973,25 +1049,19 @@ server.tool(
 
 server.tool(
   "get_serial_ports",
-  "Sistemdeki tüm seri portları detaylı bilgileriyle listeler (vendor, model, seri no, rol)",
+  "Sistemdeki tüm seri portları vendor, model, seri no ve rolleriyle listeler",
   {},
   async () => {
     const ports = await detectPorts();
-    if (ports.length === 0) {
-      return { content: [{ type: "text", text: "Bağlı seri port yok." }] };
-    }
-
-    const lines = ports.map((p) =>
-      [
-        `Port:    ${p.port}`,
-        `Rol:     ${p.role} (${p.role === "upload" ? "sadece yükleme" : p.role === "monitor" ? "sadece monitor" : "her ikisi"})`,
-        `Cihaz:   ${p.modelName || "Bilinmiyor"}`,
-        `Vendor:  ${p.vendor}:${p.product}`,
-        `Seri No: ${p.serial || "Bilinmiyor"}`,
-        "─".repeat(40),
-      ].join("\n")
-    );
-
+    if (ports.length === 0) return { content: [{ type: "text", text: "Bağlı seri port yok." }] };
+    const lines = ports.map((p) => [
+      `Port:    ${p.port}`,
+      `Rol:     ${p.role === "upload" ? "📤 upload only" : p.role === "monitor" ? "📡 monitor only" : "📤📡 upload + monitor"}`,
+      `Cihaz:   ${p.modelName || "Bilinmiyor"}`,
+      `Vendor:  ${p.vendor}:${p.product}`,
+      `Seri No: ${p.serial || "Bilinmiyor"}`,
+      "─".repeat(44),
+    ].join("\n"));
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
@@ -1004,56 +1074,39 @@ server.tool(
   "install_library",
   "Arduino kütüphanesi kurar. Versiyon belirtebilirsin.",
   {
-    library: z.string().describe("Kütüphane adı (ör: DHT sensor library, FastLED)"),
-    version: z.string().optional().describe("Versiyon (ör: 1.4.0, belirtilmezse son sürüm)"),
+    library: z.string().describe("Kütüphane adı"),
+    version: z.string().optional().describe("Versiyon (ör: 1.4.0)"),
   },
   async ({ library, version }) => {
     const libStr = version ? `"${library}@${version}"` : `"${library}"`;
     const r = await runCmd(`${ARDUINO_CLI} lib install ${libStr} 2>&1`, 60000);
     const icon = r.ok ? "✅" : "❌";
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} "${library}" ${r.ok ? "kuruldu" : "kurulamadı"}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
-    };
+    return { content: [{ type: "text", text: `${icon} "${library}" ${r.ok ? "kuruldu" : "kurulamadı"}:\n${r.stdout}\n${r.stderr}`.trim() }] };
   }
 );
 
 server.tool(
   "uninstall_library",
   "Arduino kütüphanesini kaldırır",
-  { library: z.string().describe("Kaldırılacak kütüphane adı") },
+  { library: z.string().describe("Kütüphane adı") },
   async ({ library }) => {
     const r = await runCmd(`${ARDUINO_CLI} lib uninstall "${library}" 2>&1`, 30000);
     const icon = r.ok ? "✅" : "❌";
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} "${library}" ${r.ok ? "kaldırıldı" : "kaldırılamadı"}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
-    };
+    return { content: [{ type: "text", text: `${icon} "${library}" ${r.ok ? "kaldırıldı" : "kaldırılamadı"}:\n${r.stdout}\n${r.stderr}`.trim() }] };
   }
 );
 
 server.tool(
   "list_libraries",
   "Kurulu Arduino kütüphanelerini listeler",
-  {
-    filter: z.string().optional().describe("Filtreleme terimi (opsiyonel)"),
-  },
+  { filter: z.string().optional().describe("Filtreleme (opsiyonel)") },
   async ({ filter }) => {
     const r = await runCmd(`${ARDUINO_CLI} lib list 2>&1`, 30000);
     if (!r.ok) return { content: [{ type: "text", text: `Hata: ${r.stderr}` }] };
-
     let output = r.stdout;
     if (filter) {
-      output = output
-        .split("\n")
-        .filter((l) => l.toLowerCase().includes(filter.toLowerCase()))
-        .join("\n");
+      output = output.split("\n").filter((l) => l.toLowerCase().includes(filter.toLowerCase())).join("\n");
     }
-
     return { content: [{ type: "text", text: output || "Kurulu kütüphane yok." }] };
   }
 );
@@ -1061,50 +1114,43 @@ server.tool(
 server.tool(
   "search_library",
   "Arduino kütüphane deposunda arama yapar",
-  { query: z.string().describe("Arama terimi (ör: DHT, NeoPixel, MQTT)") },
+  { query: z.string().describe("Arama terimi") },
   async ({ query }) => {
     const r = await runCmd(`${ARDUINO_CLI} lib search "${query}" 2>&1`, 30000);
     if (!r.ok) return { content: [{ type: "text", text: `Hata: ${r.stderr}` }] };
-    const lines = r.stdout.split("\n").slice(0, 50).join("\n");
-    return { content: [{ type: "text", text: lines || "Sonuç bulunamadı." }] };
+    return { content: [{ type: "text", text: r.stdout.split("\n").slice(0, 50).join("\n") || "Sonuç bulunamadı." }] };
   }
 );
 
 server.tool(
   "update_libraries",
-  "Tüm kurulu Arduino kütüphanelerini günceller",
+  "Tüm kurulu kütüphaneleri günceller",
   {},
   async () => {
     const r = await runCmd(`${ARDUINO_CLI} lib upgrade 2>&1`, 120000);
     const icon = r.ok ? "✅" : "❌";
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} Kütüphane güncellemesi ${r.ok ? "tamamlandı" : "başarısız"}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
-    };
+    return { content: [{ type: "text", text: `${icon} Kütüphane güncellemesi ${r.ok ? "tamamlandı" : "başarısız"}:\n${r.stdout}\n${r.stderr}`.trim() }] };
   }
 );
 
 server.tool(
   "install_board",
-  "Kart platform paketini kurar (ör: esp32:esp32, arduino:avr)",
-  { platform: z.string().describe("Platform (ör: esp32:esp32, arduino:avr)") },
+  "Kart platform paketini kurar. ESP32, AVR, SAMD, RP2040 vb. desteklenir.",
+  { platform: z.string().describe("Platform (ör: esp32:esp32, arduino:avr, rp2040:rp2040)") },
   async ({ platform }) => {
-    if (platform.startsWith("esp32")) {
-      await runCmd(
-        `${ARDUINO_CLI} config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json 2>&1`
-      );
+    const extraUrls: Record<string, string> = {
+      "esp32:esp32": "https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json",
+      "rp2040:rp2040": "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json",
+      "esp8266:esp8266": "https://arduino.esp8266.com/stable/package_esp8266com_index.json",
+    };
+    const prefix = platform.split(":").slice(0, 2).join(":");
+    if (extraUrls[prefix]) {
+      await runCmd(`${ARDUINO_CLI} config add board_manager.additional_urls "${extraUrls[prefix]}" 2>&1`);
       await runCmd(`${ARDUINO_CLI} core update-index 2>&1`, 30000);
     }
     const r = await runCmd(`${ARDUINO_CLI} core install ${platform} 2>&1`, 300000);
     const icon = r.ok ? "✅" : "❌";
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} ${platform} ${r.ok ? "kuruldu" : "kurulamadı"}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
-    };
+    return { content: [{ type: "text", text: `${icon} ${platform} ${r.ok ? "kuruldu" : "kurulamadı"}:\n${r.stdout}\n${r.stderr}`.trim() }] };
   }
 );
 
@@ -1116,12 +1162,7 @@ server.tool(
     await runCmd(`${ARDUINO_CLI} core update-index 2>&1`, 30000);
     const r = await runCmd(`${ARDUINO_CLI} core upgrade 2>&1`, 300000);
     const icon = r.ok ? "✅" : "❌";
-    return {
-      content: [{
-        type: "text",
-        text: `${icon} Kart güncellemesi ${r.ok ? "tamamlandı" : "başarısız"}:\n${r.stdout}\n${r.stderr}`.trim(),
-      }],
-    };
+    return { content: [{ type: "text", text: `${icon} Kart güncellemesi ${r.ok ? "tamamlandı" : "başarısız"}:\n${r.stdout}\n${r.stderr}`.trim() }] };
   }
 );
 
@@ -1142,14 +1183,10 @@ server.tool(
 server.tool(
   "open_arduino_ide",
   "Arduino IDE 2'yi açar. Sketch adı belirtilirse o sketch ile açar.",
-  {
-    sketch: z.string().optional().describe("Açılacak sketch adı (opsiyonel)"),
-  },
+  { sketch: z.string().optional().describe("Açılacak sketch adı (opsiyonel)") },
   async ({ sketch }) => {
-    const idePath =
-      process.env.ARDUINO_IDE_PATH ||
+    const idePath = process.env.ARDUINO_IDE_PATH ||
       path.join(os.homedir(), "Applications", "arduino-ide_2.3.10_Linux_64bit.AppImage");
-
     let cmd = `"${idePath}" --no-sandbox`;
     if (sketch) {
       const file = path.join(SKETCHES_DIR, sketch, `${sketch}.ino`);
@@ -1157,24 +1194,17 @@ server.tool(
     }
     cmd += " &>/dev/null &";
     await runCmd(cmd, 5000);
-    return {
-      content: [{
-        type: "text",
-        text: sketch ? `✅ Arduino IDE açılıyor: ${sketch}` : `✅ Arduino IDE açılıyor...`,
-      }],
-    };
+    return { content: [{ type: "text", text: sketch ? `✅ Arduino IDE açılıyor: ${sketch}` : `✅ Arduino IDE açılıyor...` }] };
   }
 );
 
 server.tool(
   "arduino_cli_check",
-  "Arduino CLI kurulu mu kontrol eder. Kurulu değilse kurulum komutunu verir.",
+  "Arduino CLI kurulu mu kontrol eder",
   {},
   async () => {
     const r = await runCmd(`${ARDUINO_CLI} version`);
-    if (r.ok) {
-      return { content: [{ type: "text", text: `✅ Arduino CLI kurulu:\n${r.stdout}` }] };
-    }
+    if (r.ok) return { content: [{ type: "text", text: `✅ Arduino CLI kurulu:\n${r.stdout}` }] };
     return {
       content: [{
         type: "text",
@@ -1186,10 +1216,10 @@ server.tool(
 
 server.tool(
   "arduino_cli_config",
-  "Arduino CLI yapılandırmasını gösterir veya board_manager URL'i ekler/listeler",
+  "Arduino CLI yapılandırmasını gösterir veya board manager URL ekler/kaldırır",
   {
-    action: z.enum(["show", "add_url", "reset"]).default("show").describe("show: göster, add_url: URL ekle, reset: sıfırla"),
-    url: z.string().optional().describe("Eklenecek board manager URL (action=add_url için)"),
+    action: z.enum(["show", "add_url", "reset"]).default("show"),
+    url: z.string().optional().describe("Board manager URL (add_url için)"),
   },
   async ({ action, url }) => {
     if (action === "show") {
@@ -1197,11 +1227,8 @@ server.tool(
       return { content: [{ type: "text", text: r.stdout || r.stderr }] };
     }
     if (action === "add_url" && url) {
-      const r = await runCmd(
-        `${ARDUINO_CLI} config add board_manager.additional_urls "${url}" 2>&1`
-      );
-      const icon = r.ok ? "✅" : "❌";
-      return { content: [{ type: "text", text: `${icon} URL eklendi: ${url}\n${r.stdout}` }] };
+      const r = await runCmd(`${ARDUINO_CLI} config add board_manager.additional_urls "${url}" 2>&1`);
+      return { content: [{ type: "text", text: `${r.ok ? "✅" : "❌"} URL eklendi: ${url}\n${r.stdout}` }] };
     }
     if (action === "reset") {
       const r = await runCmd(`${ARDUINO_CLI} config init --overwrite 2>&1`);
@@ -1216,7 +1243,7 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("🔌 arduino-mcp v3.0.0 started");
+  console.error("🔌 arduino-mcp v3.1.0 started");
 }
 
 main().catch((e) => {

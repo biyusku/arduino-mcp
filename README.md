@@ -2,83 +2,116 @@
 
 > Arduino IDE & ESP32/Arduino board control via Model Context Protocol (MCP)
 
-Claude Code (or any MCP-compatible AI) can write, compile, upload, and monitor Arduino sketches directly — no manual IDE interaction needed.
+Claude Code (or any MCP client) can write, compile, upload, and monitor Arduino sketches — fully hands-free.
 
 ## Features
 
-- 🔍 **Auto board detection** — automatically finds upload and monitor ports (handles ESP32-S3's dual USB setup)
-- 💾 **Board memory** — remembers your board's FQBN, ports, flash size, PSRAM after first detection
-- 📤 **One-command deploy** — compile + upload in a single `compile_and_upload` call
-- 🔓 **Auto port unlock** — frees busy serial ports before uploading (no more "port is busy" errors)
-- 📡 **Serial monitor** — read serial output directly from Claude
-- 📚 **Library & board management** — install libraries and board packages
-- 🖥️ **IDE integration** — open Arduino IDE with a specific sketch
+- 🔍 **Auto board detection** — finds upload and monitor ports automatically (handles ESP32-S3 dual-USB)
+- 💾 **Board memory** — remembers FQBN, ports, flash, PSRAM after first `detect_board`
+- 📤 **One-command deploy** — `compile_and_upload` does everything in one shot
+- 🔓 **Auto port unlock** — frees busy serial ports before uploading
+- 📡 **Serial monitor + send** — read and write serial without opening the IDE
+- 📚 **Full library management** — install, uninstall, list, search, update
+- 🌐 **OTA / WiFi upload** — upload over the air without a USB cable
+- 🗂️ **Sketch management** — create (with templates), read, write, rename, delete
+- ⚙️ **All FQBN options** — flash size, PSRAM, CDC on boot, partition scheme, upload speed
+- 🖥️ **IDE launcher** — open Arduino IDE with a specific sketch
 
 ## Requirements
 
-- [arduino-cli](https://arduino.github.io/arduino-cli/) installed and on `$PATH`
+- [arduino-cli](https://arduino.github.io/arduino-cli/) on `$PATH`
 - Node.js 18+
-- Linux (tested on Ubuntu 24.04)
+- Linux (tested Ubuntu 24.04) / macOS (untested)
 
 ## Installation
 
 ```bash
-# Clone
 git clone https://github.com/birusk/arduino-mcp
 cd arduino-mcp
+npm install && npm run build
 
-# Install dependencies & build
-npm install
-npm run build
-
-# Add to Claude Code (user-wide)
+# Add to Claude Code (user-wide, works in any project)
 claude mcp add arduino-mcp --scope user -- node /absolute/path/to/arduino-mcp/dist/index.js
 ```
 
 ## Quick Start
 
-Once added to Claude Code, just talk to it:
+After restarting Claude Code, just talk naturally:
 
 ```
-"ESP32 kartımı tanı"          → detect_board
-"blink sketch oluştur"        → create_sketch
-"blink sketch'ini yükle"      → compile_and_upload
-"serial monitörden oku"       → serial_monitor
-"DHT11 kütüphanesini kur"     → install_library
+"kartımı tanı"                    → detect_board (auto-saves ports & FQBN)
+"blink sketch oluştur"            → create_sketch (template: blink)
+"blink'i derle ve yükle"          → compile_and_upload
+"serial monitörden 5 saniye oku"  → serial_monitor
+"karta 'LED_ON' gönder"           → send_serial
+"DHT11 kütüphanesini kur"         → install_library
+"kart ayarlarını göster"          → board_config show
 ```
 
-## Tools
+## Tools (30 total)
 
+### Board
 | Tool | Description |
 |------|-------------|
-| `detect_board` | Auto-detect connected board, save ports & FQBN |
+| `detect_board` | Auto-detect board, save ports & FQBN |
 | `board_config` | Show or update saved board settings |
-| `list_boards` | List connected boards and ports |
-| `list_sketches` | List sketches in ~/Arduino |
-| `create_sketch` | Create a new sketch |
+| `board_options` | List all FQBN options (flash, psram, cdc…) |
+| `list_boards` | List connected boards with roles |
+| `board_info` | Detailed board info (chip, MAC, revision) |
+| `erase_flash` | Erase all flash memory |
+
+### Sketch
+| Tool | Description |
+|------|-------------|
+| `list_sketches` | List sketches with modification dates |
+| `create_sketch` | Create sketch (templates: blink/wifi/mqtt/sensor/empty) |
 | `read_sketch` | Read sketch source code |
-| `write_sketch` | Update sketch source code |
-| `compile_sketch` | Compile a sketch |
-| `upload_sketch` | Upload compiled sketch to board |
-| `compile_and_upload` | Compile + upload in one step |
-| `serial_monitor` | Read serial output from board |
-| `install_board` | Install board platform (e.g. esp32:esp32) |
-| `install_library` | Install an Arduino library |
-| `search_library` | Search the Arduino library index |
+| `write_sketch` | Write/update sketch source code |
+| `delete_sketch` | Delete a sketch folder |
+| `rename_sketch` | Rename a sketch |
+
+### Compile & Upload
+| Tool | Description |
+|------|-------------|
+| `compile_sketch` | Compile with error line:col formatting |
+| `upload_sketch` | Upload (auto-unlocks busy port) |
+| `compile_and_upload` | Compile + upload in one step ⭐ |
+| `wifi_upload` | OTA upload over WiFi |
+
+### Serial
+| Tool | Description |
+|------|-------------|
+| `serial_monitor` | Read serial output |
+| `send_serial` | Send data/command to board |
+| `get_serial_ports` | List all ports with roles (upload/monitor) |
+
+### Libraries & Platforms
+| Tool | Description |
+|------|-------------|
+| `install_library` | Install library (with optional version) |
+| `uninstall_library` | Uninstall a library |
+| `list_libraries` | List installed libraries |
+| `search_library` | Search Arduino library index |
+| `update_libraries` | Update all installed libraries |
+| `install_board` | Install board platform |
+| `update_boards` | Update all board platforms |
+| `list_installed_boards` | List installed platforms |
+
+### IDE & CLI
+| Tool | Description |
+|------|-------------|
 | `open_arduino_ide` | Open Arduino IDE (optionally with a sketch) |
-| `board_info` | Show detailed board info |
 | `arduino_cli_check` | Check arduino-cli installation |
+| `arduino_cli_config` | Show/modify arduino-cli config |
 
 ## ESP32-S3 Dual USB
 
-ESP32-S3 boards have two USB ports:
+ESP32-S3 has two USB ports — `detect_board` handles this automatically:
 
-| Port | Purpose |
-|------|---------|
-| **COM / UART** (CH343 chip) | Upload sketches |
-| **USB** (native ESP32-S3) | Serial monitor |
-
-`detect_board` handles this automatically — it identifies each port's role and saves both.
+| Port | Role | Chip |
+|------|------|------|
+| COM / UART | Upload sketches | CH343 (1a86:55d3) |
+| USB | Serial monitor | Native ESP32-S3 (303a:1001) |
 
 ## Environment Variables
 
@@ -88,9 +121,9 @@ ESP32-S3 boards have two USB ports:
 | `ARDUINO_SKETCHES_DIR` | `~/Arduino` | Sketches directory |
 | `ARDUINO_IDE_PATH` | `~/Applications/arduino-ide*.AppImage` | Arduino IDE path |
 
-## Board Config File
+## Board Config (`~/.arduino-mcp.json`)
 
-Saved to `~/.arduino-mcp.json`:
+Automatically created by `detect_board`:
 
 ```json
 {

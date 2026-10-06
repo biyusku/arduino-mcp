@@ -15,6 +15,11 @@ import * as fss from "fs";
 import * as path from "path";
 import * as os from "os";
 import { serialBuffer } from "./serial-buffer.js";
+import {
+  readProjectConfig, writeProjectConfig,
+  listProjectFiles, readProjectFile, writeProjectFile,
+  type ArduinoProject,
+} from "./project.js";
 
 const execAsync = promisify(exec);
 
@@ -1240,6 +1245,159 @@ server.tool(
 );
 
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// PROJECT TOOLS
+// ════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "project_init",
+  "Bir sketch için arduino-mcp.yaml proje dosyası oluşturur. FQBN, port, kütüphaneler ve build flag'leri kaydeder.",
+  {
+    name: z.string().describe("Sketch adı"),
+    description: z.string().optional().describe("Proje açıklaması"),
+    fqbn: z.string().optional().describe("Kart FQBN (opsiyonel, kayıtlı kart kullanılır)"),
+    libraries: z.array(z.string()).optional().describe("Gerekli kütüphaneler (ör: [DHT sensor library, FastLED])"),
+    baud: z.number().optional().describe("Serial baud rate"),
+  },
+  async ({ name, description, fqbn, libraries, baud }) => {
+    const cfg = await loadConfig();
+    const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
+
+    const project: ArduinoProject = {
+      name,
+      description: description || `Arduino project: ${name}`,
+      version: "1.0.0",
+      fqbn: fqbn || (board ? buildFqbn(board) : undefined),
+      upload_port: board?.uploadPort,
+      monitor_port: board?.monitorPort,
+      baud: baud || 115200,
+      libraries: libraries || [],
+    };
+
+    await writeProjectConfig(name, project);
+    return {
+      content: [{
+        type: "text",
+        text: [
+          `✅ Proje dosyası oluşturuldu: ~/Arduino/${name}/arduino-mcp.yaml`,
+          `FQBN:     ${project.fqbn || "belirtilmedi"}`,
+          `Upload:   ${project.upload_port || "belirtilmedi"}`,
+          `Monitor:  ${project.monitor_port || "belirtilmedi"}`,
+          `Baud:     ${project.baud}`,
+          project.libraries?.length ? `Libs:     ${project.libraries.join(", ")}` : "",
+        ].filter(Boolean).join("\n"),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "project_info",
+  "Bir sketch'in arduino-mcp.yaml proje dosyasını gösterir",
+  { name: z.string().describe("Sketch adı") },
+  async ({ name }) => {
+    const project = await readProjectConfig(name);
+    if (!project) {
+      return {
+        content: [{
+          type: "text",
+          text: `❌ ~/Arduino/${name}/arduino-mcp.yaml bulunamadı. "project_init" ile oluştur.`,
+        }],
+      };
+    }
+    const files = await listProjectFiles(name);
+    return {
+      content: [{
+        type: "text",
+        text: [
+          `📦 Proje: ${project.name}`,
+          project.description ? `Açıklama: ${project.description}` : "",
+          project.version ? `Versiyon: ${project.version}` : "",
+          `FQBN:     ${project.fqbn || "belirtilmedi"}`,
+          `Upload:   ${project.upload_port || "belirtilmedi"}`,
+          `Monitor:  ${project.monitor_port || "belirtilmedi"}`,
+          `Baud:     ${project.baud || 115200}`,
+          project.libraries?.length ? `Libs:     ${project.libraries.join(", ")}` : "",
+          `Dosyalar: ${files.join(", ")}`,
+        ].filter(Boolean).join("\n"),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "project_list_files",
+  "Bir sketch klasöründeki tüm kaynak dosyaları listeler (.ino, .h, .cpp, .c)",
+  { name: z.string().describe("Sketch adı") },
+  async ({ name }) => {
+    const files = await listProjectFiles(name);
+    if (files.length === 0) {
+      return { content: [{ type: "text", text: `❌ ~/Arduino/${name} bulunamadı veya boş.` }] };
+    }
+    return {
+      content: [{ type: "text", text: `📂 ~/Arduino/${name}/\n${files.map((f) => `  • ${f}`).join("\n")}` }],
+    };
+  }
+);
+
+server.tool(
+  "project_read_file",
+  "Bir sketch klasöründeki belirli bir dosyayı okur (.ino, .h, .cpp vb.)",
+  {
+    name: z.string().describe("Sketch adı"),
+    filename: z.string().describe("Dosya adı (ör: main.ino, sensors.h)"),
+  },
+  async ({ name, filename }) => {
+    const content2 = await readProjectFile(name, filename);
+    if (content2 === null) {
+      return { content: [{ type: "text", text: `❌ ~/Arduino/${name}/${filename} bulunamadı.` }] };
+    }
+    const ext = filename.split(".").pop() || "cpp";
+    return {
+      content: [{ type: "text", text: `📄 ${filename}:\n\`\`\`${ext}\n${content2}\n\`\`\`` }],
+    };
+  }
+);
+
+server.tool(
+  "project_write_file",
+  "Bir sketch klasörüne yeni bir dosya yazar veya günceller (.h, .cpp, .c header/kaynak dosyaları)",
+  {
+    name: z.string().describe("Sketch adı"),
+    filename: z.string().describe("Dosya adı (ör: sensors.h, utils.cpp)"),
+    content: z.string().describe("Dosya içeriği"),
+  },
+  async ({ name, filename, content: fileContent }) => {
+    await writeProjectFile(name, filename, fileContent);
+    return {
+      content: [{ type: "text", text: `✅ ~/Arduino/${name}/${filename} yazıldı.` }],
+    };
+  }
+);
+
+server.tool(
+  "project_install_deps",
+  "Proje arduino-mcp.yaml dosyasındaki tüm kütüphaneleri kurar",
+  { name: z.string().describe("Sketch adı") },
+  async ({ name }) => {
+    const project = await readProjectConfig(name);
+    if (!project) {
+      return { content: [{ type: "text", text: `❌ ~/Arduino/${name}/arduino-mcp.yaml bulunamadı.` }] };
+    }
+    if (!project.libraries || project.libraries.length === 0) {
+      return { content: [{ type: "text", text: "ℹ️ Bu projede tanımlı kütüphane yok." }] };
+    }
+
+    const results: string[] = [];
+    for (const lib of project.libraries) {
+      const r = await runCmd(`${ARDUINO_CLI} lib install "${lib}" 2>&1`, 60000);
+      results.push(`${r.ok ? "✅" : "❌"} ${lib}: ${r.ok ? "kuruldu" : r.stderr.split("\n")[0]}`);
+    }
+    return { content: [{ type: "text", text: results.join("\n") }] };
+  }
+);
+
 // ════════════════════════════════════════════════════════════════════════════
 // PERSISTENT SERIAL BUFFER TOOLS
 // ════════════════════════════════════════════════════════════════════════════
@@ -1332,7 +1490,7 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("🔌 arduino-mcp v3.2.0 started");
+  console.error("🔌 arduino-mcp v3.3.0 started");
 }
 
 main().catch((e) => {

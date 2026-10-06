@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * arduino-mcp v3.1.0
+ * arduino-mcp v3.2.0
  * Universal MCP server for Arduino IDE & arduino-cli
  * Supports: AVR (Uno/Mega/Nano), ESP32, ESP32-S3, ESP8266, RP2040, STM32, and more
  * https://github.com/birusk/arduino-mcp
@@ -14,6 +14,7 @@ import * as fs from "fs/promises";
 import * as fss from "fs";
 import * as path from "path";
 import * as os from "os";
+import { serialBuffer } from "./serial-buffer.js";
 
 const execAsync = promisify(exec);
 
@@ -1238,12 +1239,100 @@ server.tool(
   }
 );
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// PERSISTENT SERIAL BUFFER TOOLS
+// ════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "serial_start",
+  "Serial portu arka planda sürekli dinlemeye başlar. Kart çalışırken tüm çıktıları buffer'da biriktirir. serial_read ile istediğinde okursun.",
+  {
+    port: z.string().optional().describe("Port (opsiyonel, kayıtlı monitor portu)"),
+    baud: z.number().default(115200).describe("Baud rate"),
+  },
+  async ({ port, baud }) => {
+    const cfg = await loadConfig();
+    const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
+    const resolvedPort = port || board?.monitorPort || "/dev/ttyACM0";
+    await fixPortPermission(resolvedPort);
+    const result = serialBuffer.start(resolvedPort, baud);
+    const icon = result.ok ? "✅" : "❌";
+    return { content: [{ type: "text", text: `${icon} ${result.message}` }] };
+  }
+);
+
+server.tool(
+  "serial_read",
+  "Arka planda çalışan serial buffer'dan son N satırı okur. serial_start ile başlatılmış olmalı.",
+  {
+    port: z.string().optional().describe("Port (opsiyonel)"),
+    lines: z.number().default(50).describe("Kaç satır okunacak (max 500)"),
+    clear: z.boolean().default(false).describe("Okuduktan sonra buffer'ı temizle"),
+  },
+  async ({ port, lines, clear }) => {
+    const cfg = await loadConfig();
+    const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
+    const resolvedPort = port || board?.monitorPort || "/dev/ttyACM0";
+    const result = serialBuffer.read(resolvedPort, Math.min(lines, 500), clear);
+    if (!result.ok) {
+      return { content: [{ type: "text", text: `❌ ${result.message}` }] };
+    }
+    if (result.lines.length === 0) {
+      return { content: [{ type: "text", text: `📡 ${resolvedPort}: Buffer boş (henüz veri yok)` }] };
+    }
+    return {
+      content: [{
+        type: "text",
+        text: `📡 ${resolvedPort} — son ${result.lines.length} satır:
+${result.lines.join("\n")}`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "serial_stop",
+  "Arka planda çalışan serial buffer'ı durdurur",
+  {
+    port: z.string().optional().describe("Port (opsiyonel, tümü için boş bırak)"),
+  },
+  async ({ port }) => {
+    if (!port) {
+      serialBuffer.stopAll();
+      return { content: [{ type: "text", text: "✅ Tüm serial buffer oturumları durduruldu." }] };
+    }
+    const cfg = await loadConfig();
+    const board = cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] : null;
+    const resolvedPort = port || board?.monitorPort || "/dev/ttyACM0";
+    const result = serialBuffer.stop(resolvedPort);
+    const icon = result.ok ? "✅" : "❌";
+    return { content: [{ type: "text", text: `${icon} ${result.message}` }] };
+  }
+);
+
+server.tool(
+  "serial_status",
+  "Aktif serial buffer oturumlarını listeler (port, baud, satır sayısı, çalışma süresi)",
+  {},
+  async () => {
+    const sessions = serialBuffer.status();
+    if (sessions.length === 0) {
+      return { content: [{ type: "text", text: "📡 Aktif serial buffer oturumu yok." }] };
+    }
+    const lines = sessions.map((s) =>
+      `${s.port}  @ ${s.baud} baud  |  ${s.lineCount} satır  |  ${s.byteCount} byte  |  uptime: ${s.uptime}`
+    );
+    return { content: [{ type: "text", text: `📡 Aktif oturumlar:\n${lines.join("\n")}` }] };
+  }
+);
+
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("🔌 arduino-mcp v3.1.0 started");
+  console.error("🔌 arduino-mcp v3.2.0 started");
 }
 
 main().catch((e) => {

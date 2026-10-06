@@ -1,6 +1,6 @@
 {
   "name": "arduino-mcp",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Universal MCP server for Arduino IDE & arduino-cli — compile, upload, monitor any board (ESP32, Uno, Mega, RP2040) via AI",
   "main": "dist/index.js",
   "type": "module",

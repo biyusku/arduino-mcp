@@ -15,6 +15,7 @@ import * as fss from "fs";
 import * as path from "path";
 import * as os from "os";
 import { serialBuffer } from "./serial-buffer.js";
+import { generateSvg, generateMarkdownTable, parseConnections, type CircuitDiagram } from "./diagram.js";
 import {
   readProjectConfig, writeProjectConfig,
   listProjectFiles, readProjectFile, writeProjectFile,
@@ -1246,6 +1247,110 @@ server.tool(
 
 
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// DIAGRAM TOOLS
+// ════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "generate_diagram",
+  "Devre bağlantı şeması oluşturur. SVG görsel veya Markdown tablo formatında çıktı verir. Bileşenleri ve bağlantıları tanımla.",
+  {
+    title: z.string().describe("Devre başlığı"),
+    format: z.enum(["svg", "markdown", "both"]).default("both").describe("Çıktı formatı"),
+    components: z.array(z.object({
+      name: z.string().describe("Bileşen adı (ör: ESP32, DHT11)"),
+      type: z.enum(["microcontroller", "sensor", "actuator", "passive", "power", "display", "communication"]).describe("Bileşen tipi"),
+      pins: z.array(z.string()).describe("Pin listesi (ör: [GPIO2, GPIO4, 3V3, GND])"),
+    })).describe("Devre bileşenleri"),
+    connections: z.array(z.object({
+      from: z.string().describe("Kaynak pin (ör: ESP32 GPIO4)"),
+      to: z.string().describe("Hedef pin (ör: DHT11 DATA)"),
+      wire: z.string().optional().describe("Kablo rengi (red/black/yellow/green/blue)"),
+      note: z.string().optional().describe("Not (ör: 10k pull-up, 330 ohm)"),
+    })).describe("Pin bağlantıları"),
+    notes: z.array(z.string()).optional().describe("Genel notlar"),
+    save_to: z.string().optional().describe("Kayıt yeri — sketch adı (opsiyonel, wiring.svg/md kaydeder)"),
+  },
+  async ({ title, format, components, connections, notes, save_to }) => {
+    const diagram: CircuitDiagram = { title, components, connections, notes };
+
+    const results: string[] = [];
+
+    if (format === "svg" || format === "both") {
+      const svg = generateSvg(diagram);
+      if (save_to) {
+        const svgPath = path.join(SKETCHES_DIR, save_to, "wiring.svg");
+        await fs.writeFile(svgPath, svg, "utf-8");
+        results.push(`✅ SVG kaydedildi: ~/Arduino/${save_to}/wiring.svg`);
+      }
+      results.push("```svg");
+      results.push(svg.split("\n").slice(0, 3).join("\n") + "\n... (SVG hazır)");
+      results.push("```");
+    }
+
+    if (format === "markdown" || format === "both") {
+      const md = generateMarkdownTable(diagram);
+      if (save_to) {
+        const mdPath = path.join(SKETCHES_DIR, save_to, "wiring.md");
+        await fs.writeFile(mdPath, md, "utf-8");
+        results.push(`✅ Markdown kaydedildi: ~/Arduino/${save_to}/wiring.md`);
+      }
+      results.push(md);
+    }
+
+    return { content: [{ type: "text", text: results.join("\n") }] };
+  }
+);
+
+server.tool(
+  "quick_diagram",
+  "Hızlı devre şeması — bağlantıları tek satırda yaz (ör: 'ESP32 GPIO4 -> DHT11 DATA wire:yellow note:10k pullup'). Otomatik parse eder.",
+  {
+    title: z.string().describe("Devre başlığı"),
+    connections_text: z.string().describe("Bağlantılar, her satırda bir tane:\nESP32 GPIO4 -> DHT11 DATA wire:yellow\nESP32 3V3 -> DHT11 VCC wire:red\nESP32 GND -> DHT11 GND wire:black"),
+    save_to: z.string().optional().describe("Sketch adı — oraya wiring.md kaydeder"),
+  },
+  async ({ title, connections_text, save_to }) => {
+    const connections = parseConnections(connections_text);
+    if (connections.length === 0) {
+      return {
+        content: [{ type: "text", text: "❌ Bağlantı parse edilemedi.\nFormat: 'ESP32 GPIO4 -> DHT11 DATA wire:yellow note:10k pullup'" }],
+      };
+    }
+
+    // Bileşenleri bağlantılardan otomatik çıkar
+    const compMap = new Map<string, Set<string>>();
+    for (const conn of connections) {
+      const [fromComp, fromPin] = conn.from.split(" ").reduce((a: [string, string], w, i, arr) =>
+        i === 0 ? [w, arr.slice(1).join(" ")] : a, ["", ""]);
+      const [toComp, toPin] = conn.to.split(" ").reduce((a: [string, string], w, i, arr) =>
+        i === 0 ? [w, arr.slice(1).join(" ")] : a, ["", ""]);
+
+      if (!compMap.has(fromComp)) compMap.set(fromComp, new Set());
+      if (!compMap.has(toComp)) compMap.set(toComp, new Set());
+      if (fromPin) compMap.get(fromComp)!.add(fromPin);
+      if (toPin) compMap.get(toComp)!.add(toPin);
+    }
+
+    const components = Array.from(compMap.entries()).map(([name, pins]) => ({
+      name,
+      type: "sensor" as const,
+      pins: Array.from(pins),
+    }));
+
+    const diagram: CircuitDiagram = { title, components, connections };
+    const md = generateMarkdownTable(diagram);
+
+    if (save_to) {
+      const mdPath = path.join(SKETCHES_DIR, save_to, "wiring.md");
+      await fs.writeFile(mdPath, md, "utf-8");
+    }
+
+    return { content: [{ type: "text", text: md }] };
+  }
+);
+
 // ════════════════════════════════════════════════════════════════════════════
 // PROJECT TOOLS
 // ════════════════════════════════════════════════════════════════════════════
@@ -1490,7 +1595,7 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("🔌 arduino-mcp v3.3.0 started");
+  console.error("🔌 arduino-mcp v3.4.0 started");
 }
 
 main().catch((e) => {

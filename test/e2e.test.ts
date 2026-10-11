@@ -333,7 +333,7 @@ describe("arduino-mcp over stdio", () => {
       const own3 = makeSandbox();
       const fresh3 = await connect(own3);
       try {
-        await fresh3.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3", psram: "opi", flash_size: "16M" });
+        await fresh3.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3", psram: "opi", flash_size: "16M", upload_port: "/dev/ttyUSB9" });
         fs.writeFileSync(path.join(own3.dir, "board-list.json"), JSON.stringify({
           detected_ports: [{
             port: { address: "/dev/ttyACM3", protocol: "serial", properties: { vid: "0x2341", pid: "0x0043", serialNumber: "UNO1" } },
@@ -342,10 +342,10 @@ describe("arduino-mcp over stdio", () => {
         }));
         r = await fresh3.call("detect_board");
         assert.match(r.text, /FQBN:\s+arduino:avr:uno\n/);
-        const restore = r.text.match(/board_config action=set fqbn=(\S+)/)?.[1];
-        assert.equal(restore, "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi");
-        r = await fresh3.call("board_config", { action: "set", fqbn: restore });
-        assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
+        const restore = r.text.match(/board_config action=set fqbn=(\S+) upload_port=(\S+)/);
+        assert.deepEqual(restore?.slice(1), ["esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi", "/dev/ttyUSB9"]);
+        r = await fresh3.call("board_config", { action: "set", fqbn: restore![1], upload_port: restore![2] });
+        assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\nUpload: \/dev\/ttyUSB9/);
         const saved = JSON.parse(fs.readFileSync(own3.env.ARDUINO_MCP_CONFIG, "utf-8"));
         assert.equal(saved.boards.manual, undefined);
       } finally {

@@ -72,8 +72,13 @@ export function registerBoardTools(server: McpServer): void {
               // The detected board wins; tell the user how to get their setup back
               // (full FQBN incl. options), and drop the entry nothing could reach.
               const full = buildFqbn(manual);
+              const restore = [
+                `fqbn=${full}`,
+                manual.uploadPort ? `upload_port=${manual.uploadPort}` : "",
+                manual.monitorPort ? `monitor_port=${manual.monitorPort}` : "",
+              ].filter(Boolean).join(" ");
               manualNote = `Your manually configured board (${full}) does not match the detected board, so the detected ` +
-                `one is used. To use yours anyway: board_config action=set fqbn=${full}`;
+                `one is used. To use yours anyway: board_config action=set ${restore}`;
               delete cfg.boards.manual;
             }
           }

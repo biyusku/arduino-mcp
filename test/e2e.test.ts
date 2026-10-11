@@ -450,6 +450,10 @@ describe("arduino-mcp over stdio", () => {
     // removing settings is explicit
     r = await mcp.call("board_config", { action: "set", clear: ["psram", "monitor_port"] });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M\nUpload: \/dev\/ttyUSB1 \| Monitor: not set/);
+    r = await mcp.call("board_config", { action: "set", fqbn: "esp8266:esp8266:nodemcuv2", extra_options: "eesz=4M2M" });
+    r = await mcp.call("board_config", { action: "set", clear: ["flash_size"] });
+    assert.match(r.text, /flash_size does not apply to esp8266 boards, so nothing was cleared/);
+    assert.match(r.text, /FQBN: esp8266:esp8266:nodemcuv2:eesz=4M2M\n/);
     r = await mcp.call("board_config", { action: "set", psram: "opi", clear: ["psram"] });
     assert.equal(r.isError, true);
     assert.match(r.text, /psram given and cleared in the same call/);

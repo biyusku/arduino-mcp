@@ -252,12 +252,16 @@ export function registerBoardTools(server: McpServer): void {
         }
         const b = getDefaultBoard(cfg)!;
 
+        const notes: string[] = [];
         // removals first, so values given in the same call (or inside the fqbn) win
         for (const k of clear) {
           if (k === "upload_port") b.uploadPort = "";
           else if (k === "monitor_port") b.monitorPort = "";
           else if (k === "extra_options") b.extraOptions = undefined;
-          else setBoardOption(b, CLEAR_FIELDS[k], undefined);
+          else if (!optionKey(b.family, CLEAR_FIELDS[k])) {
+            notes.push(`⚠️ ${k} does not apply to ${b.family} boards, so nothing was cleared; their menu options are in ` +
+              `extra_options (set extra_options again, or clear ["extra_options"]).`);
+          } else setBoardOption(b, CLEAR_FIELDS[k], undefined);
         }
         if (a.fqbn) {
           const { base, options } = splitFqbn(assertFqbn(a.fqbn));
@@ -279,7 +283,6 @@ export function registerBoardTools(server: McpServer): void {
           applyBoardOptions(b, a.extra_options);
         }
 
-        const notes: string[] = [];
         const fieldArgs: Array<[OptionField, string, string | undefined]> = [
           ["flashSize", "flash_size", a.flash_size],
           ["psram", "psram", a.psram],

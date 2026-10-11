@@ -10,7 +10,7 @@ import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, type BoardCo
 import { ARDUINO_CLI } from "./env.js";
 import { run, sleep, type RunResult } from "./exec.js";
 import { assertPortAccessible, releasePort } from "./ports.js";
-import { assertFqbn, assertSerialPort, sketchDir, UserError } from "./validate.js";
+import { assertBuildFlags, assertFqbn, assertSerialPort, sketchDir, UserError } from "./validate.js";
 
 export function cli(args: string[], timeoutMs = 30_000): Promise<RunResult> {
   return run(ARDUINO_CLI, args, { timeoutMs });
@@ -114,7 +114,8 @@ export async function resolveTarget(
     family: getPlatformFamily(fqbn),
     uploadPort,
     monitorPort: project?.monitor_port || board?.monitorPort || undefined,
-    buildFlags: project?.build_flags || [],
+    // the yaml may come from a downloaded sketch: only harmless compiler flags
+    buildFlags: assertBuildFlags(project?.build_flags || []),
     board,
   };
 }

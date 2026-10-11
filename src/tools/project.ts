@@ -5,7 +5,7 @@ import { z } from "zod";
 import { cli } from "../lib/arduino.js";
 import { buildFqbn, getDefaultBoard, loadConfig } from "../lib/config.js";
 import { displayPath } from "../lib/env.js";
-import { assertFqbn, assertLibraryName, assertSerialPort, sketchDir, UserError } from "../lib/validate.js";
+import { assertBuildFlags, assertFqbn, assertLibraryName, assertSerialPort, sketchDir, UserError } from "../lib/validate.js";
 import {
   CONFIG_FILENAME, listProjectFiles, readProjectConfig, readProjectFile, writeProjectConfig, writeProjectFile,
   type ArduinoProject,
@@ -30,7 +30,7 @@ export function registerProjectTools(server: McpServer): void {
         monitor_port: z.string().optional().describe("Monitor port (default: saved board)"),
         baud: z.number().int().positive().optional().describe("Serial baud rate (default 115200)"),
         libraries: z.array(z.string()).optional().describe('Required libraries, e.g. ["DHT sensor library", "FastLED"]'),
-        build_flags: z.array(z.string()).optional().describe('Extra compiler flags, e.g. ["-DDEBUG=1"]'),
+        build_flags: z.array(z.string()).optional().describe('Extra compiler flags, one per entry: -DNAME[=value], -UNAME, -O2, -g, -std=..., -W..., -f..., -m...'),
         overwrite: z.boolean().default(false).describe(`Replace an existing ${CONFIG_FILENAME}`),
       },
       annotations: WRITES,
@@ -50,7 +50,7 @@ export function registerProjectTools(server: McpServer): void {
         monitor_port: args.monitor_port ? assertSerialPort(args.monitor_port) : board?.monitorPort || undefined,
         baud: args.baud || 115200,
         libraries: (args.libraries || []).map(assertLibraryName),
-        build_flags: args.build_flags || [],
+        build_flags: assertBuildFlags(args.build_flags || []),
       };
       const file = await writeProjectConfig(args.name, project);
       return ok([

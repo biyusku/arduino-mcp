@@ -186,7 +186,9 @@ build_flags:
 ```
 
 Compile and upload tools resolve settings in this order: **tool argument → `arduino-mcp.yaml` → saved board**.
-`build_flags` are passed to the compiler as `compiler.cpp.extra_flags` / `compiler.c.extra_flags`.
+`build_flags` are passed to the compiler as `compiler.cpp.extra_flags` / `compiler.c.extra_flags`. Because a sketch folder may come from
+anywhere, only harmless flags are accepted, one per entry: `-DNAME[=value]`, `-UNAME`, `-O<level>`, `-g`, `-std=...`, `-W<warning>`,
+`-f<option>[=<number>]`, `-m<option>`.
 
 ## Board Config (`~/.arduino-mcp.json`)
 
@@ -229,6 +231,8 @@ The server runs tools on request of an AI model, whose input can be influenced b
 - External programs are started **without a shell**, with argument arrays; values can never become shell commands.
 - Sketch names must match `[A-Za-z0-9][A-Za-z0-9_.-]*`; file paths must stay inside the sketch folder.
 - Ports must be serial devices (`/dev/...`, `COMx`); FQBNs, URLs and hosts are validated.
+- Compiler flags from `arduino-mcp.yaml` are limited to an allowlist (no `-wrapper`, `-fplugin=`, `-Wl,`, `@file`, ...).
+- Freeing a busy port only ever affects real serial devices, never terminals or this server's own client.
 - No `chmod`/`sudo` on devices: missing permissions are reported with the fix.
 - Destructive tools (`delete_sketch`, `erase_flash`, `uninstall_library`, `arduino_cli_config`) carry the MCP `destructiveHint`; `arduino_cli_config reset` also needs `confirm: true`.
 - Note: the OTA password of `wifi_upload` is passed to arduino-cli on its command line.

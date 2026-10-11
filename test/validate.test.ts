@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  assertFqbn, assertHost, assertHttpUrl, assertLibraryName, assertPlatformId, assertSerialPort, assertSketchName,
+  assertBuildFlags, assertFqbn, assertHost, assertHttpUrl, assertLibraryName, assertPlatformId, assertSerialPort, assertSketchName,
   parseBoardOptions, resolveInside, sketchDir, UserError,
 } from "../src/lib/validate.js";
 
@@ -80,3 +80,19 @@ test("hosts, URLs, libraries, platforms", () => {
   assert.equal(assertPlatformId("arduino:avr@1.8.6"), "arduino:avr@1.8.6");
   assert.throws(() => assertPlatformId("esp32"), UserError);
 });
+
+test("build flags: harmless flags pass", () => {
+  const ok = ["-DDEBUG", "-DDEBUG=1", "-DPIN=GPIO_NUM_4", "-DVER=1.2.3", "-UNDEBUG", "-O2", "-Os", "-O", "-g", "-g3",
+    "-std=gnu++17", "-Wall", "-Werror", "-Wno-unused-variable", "-fpermissive", "-fno-exceptions", "-fmax-errors=5", "-mlongcalls", "-mcpu=cortex-m0plus"];
+  assert.deepEqual(assertBuildFlags(ok), ok);
+});
+
+test("build flags: anything that can run code or read files is refused", () => {
+  for (const flag of [
+    "-wrapper", "/bin/sh,-c,id", "@/home/u/.ssh/id_rsa", "-fplugin=/tmp/evil.so", "-Wl,-plugin=/tmp/evil.so", "-Wa,--foo", "-Wp,-x",
+    "-B/tmp", "-include", "/etc/passwd", "-I/home/u/.ssh", "-specs=/tmp/x", "-DX -fplugin=/tmp/e.so", '-DX="a" -fplugin=e', "-DX=a\\b", "",
+  ]) {
+    assert.throws(() => assertBuildFlags([flag]), UserError, flag);
+  }
+});
+

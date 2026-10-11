@@ -111,3 +111,31 @@ export function assertPlatformId(id: string): string {
   }
   return id;
 }
+
+// Compiler flags allowed in arduino-mcp.yaml. Anything that could make the
+// compiler run programs or read files (-wrapper, -fplugin=, -Wl,..., -B,
+// @file, -include, -I) is refused, and a flag may not contain whitespace,
+// quotes or backslashes (they could split into extra flags in the recipe).
+const BUILD_FLAG_RES = [
+  /^-D[A-Za-z_][A-Za-z0-9_]*(?:=[^\s"'\\]*)?$/, // -DNAME or -DNAME=value
+  /^-U[A-Za-z_][A-Za-z0-9_]*$/,
+  /^-O[0-3sgz]?$/,
+  /^-g[0-3]?$/,
+  /^-std=[a-z0-9+]+$/,
+  /^-W(?:no-)?[a-z][a-z0-9-]*(?:=[0-9]+)?$/, // warnings; "-Wl,", "-Wa," etc. contain a comma
+  /^-f(?:no-)?[a-z][a-z0-9-]*(?:=[0-9]+)?$/, // -fplugin=path has a non-numeric value
+  /^-m[a-z][a-z0-9-]*(?:=[A-Za-z0-9_.-]+)?$/,
+];
+
+export function assertBuildFlags(flags: string[]): string[] {
+  for (const flag of flags) {
+    if (!BUILD_FLAG_RES.some((re) => re.test(flag))) {
+      throw new UserError(
+        `Build flag "${flag}" is not allowed. Use one flag per entry: -DNAME[=value], -UNAME, -O<level>, -g, ` +
+        "-std=..., -W<warning>, -f<option>[=<number>] or -m<option>."
+      );
+    }
+  }
+  return flags;
+}
+

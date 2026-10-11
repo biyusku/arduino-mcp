@@ -55,6 +55,28 @@ export async function loadConfig(file = CONFIG_FILE): Promise<Config> {
 
 let tmpCounter = 0;
 
+/**
+ * fs.rename, retried briefly on Windows: replacing a file fails with EPERM/
+ * EACCES/EBUSY while another handle (a concurrent read, or the previous
+ * rename) still has it open.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  rename: (a: string, b: string) => Promise<void> = fs.rename,
+  platform: string = process.platform
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rename(from, to);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (platform !== "win32" || attempt >= 10 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw e;
+      await new Promise((r) => setTimeout(r, 20 * attempt));
+    }
+  }
+}
+
 /** Brings boards saved by older versions up to date. */
 function migrateBoard(b: BoardConfig): void {
   if (!b.fqbn) return;
@@ -94,7 +116,7 @@ export async function saveConfig(cfg: Config, file = CONFIG_FILE): Promise<void>
   const tmp = `${file}.${process.pid}.${++tmpCounter}.tmp`;
   try {
     await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf-8");
-    await fs.rename(tmp, file);
+    await renameWithRetry(tmp, file);
   } catch (e) {
     await fs.rm(tmp, { force: true });
     throw e;

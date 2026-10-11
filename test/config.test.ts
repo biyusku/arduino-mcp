@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  applyBoardOptions, buildFqbn, getPlatformFamily, loadConfig, mergeOptions, saveConfig, setBoardOption, splitFqbn, updateConfig,
+  applyBoardOptions, buildFqbn, getPlatformFamily, loadConfig, mergeOptions, renameWithRetry, saveConfig, setBoardOption, splitFqbn,
+  updateConfig,
   type BoardConfig,
 } from "../src/lib/config.js";
 import { UserError } from "../src/lib/validate.js";
@@ -152,5 +153,26 @@ test("v3 'cpu speed' (uploadSpeed on AVR) becomes cpu=...; v4.0.0 options in ext
   assert.equal(cfg.boards.s3.psram, "opi"); // same effective FQBN as before
   assert.equal(cfg.boards.s3.extraOptions, "DebugLevel=info");
   assert.equal(buildFqbn(cfg.boards.s3), "esp32:esp32:esp32s3:PSRAM=opi,DebugLevel=info");
+});
+
+test("renameWithRetry retries Windows sharing errors, nothing else", async () => {
+  const failing = (codes: string[]) => {
+    let calls = 0;
+    const rename = async () => {
+      const code = codes[calls++];
+      if (code) throw Object.assign(new Error(code), { code });
+    };
+    return { rename, calls: () => calls };
+  };
+  const win = failing(["EPERM", "EBUSY"]);
+  await renameWithRetry("a", "b", win.rename, "win32");
+  assert.equal(win.calls(), 3);
+
+  const posix = failing(["EPERM"]);
+  await assert.rejects(renameWithRetry("a", "b", posix.rename, "linux"), /EPERM/);
+  assert.equal(posix.calls(), 1);
+
+  const other = failing(["ENOENT"]);
+  await assert.rejects(renameWithRetry("a", "b", other.rename, "win32"), /ENOENT/);
 });
 

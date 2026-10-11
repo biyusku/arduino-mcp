@@ -192,3 +192,17 @@ test("a board saved under the id __proto__ is an ordinary entry", async () => {
   assert.equal(({} as Record<string, unknown>).fqbn, undefined); // Object.prototype untouched
 });
 
+test("menu option keys and architectures named like Object.prototype members are plain names", () => {
+  const uno = board({ fqbn: "arduino:avr:uno", family: "avr" });
+  applyBoardOptions(uno, "toString=1,cpu=atmega328old");
+  assert.equal(uno.extraOptions, "toString=1,cpu=atmega328old");
+  assert.deepEqual(Object.keys(uno).filter((k) => k.includes("function")), []);
+  assert.equal(buildFqbn(uno), "arduino:avr:uno:toString=1,cpu=atmega328old");
+
+  assert.equal(getPlatformFamily("foo:constructor:bar"), "constructor");
+  assert.equal(getPlatformFamily("foo:__proto__:bar"), "__proto__");
+  const odd = board({ fqbn: "foo:constructor:bar", family: getPlatformFamily("foo:constructor:bar") });
+  applyBoardOptions(odd, "valueOf=2");
+  assert.equal(buildFqbn(odd), "foo:constructor:bar:valueOf=2");
+});
+

@@ -171,7 +171,7 @@ const ARCH_FAMILIES: Record<string, string> = {
 export function getPlatformFamily(fqbn: string): string {
   const arch = fqbn.split(":")[1];
   if (!arch) return "unknown";
-  return ARCH_FAMILIES[arch] || arch;
+  return Object.hasOwn(ARCH_FAMILIES, arch) ? ARCH_FAMILIES[arch] : arch;
 }
 
 /** Families whose USB-serial chip resets the board when the port is opened (DTR). */
@@ -197,9 +197,14 @@ const OPTION_FIELDS: Record<string, Record<string, OptionField>> = {
   esp8266: { baud: "uploadSpeed" },
 };
 
+/** Menu key → field for a family. Keys come from user input: own properties only. */
+function fieldsFor(family: string): Record<string, OptionField> {
+  return Object.hasOwn(OPTION_FIELDS, family) ? OPTION_FIELDS[family] : {};
+}
+
 /** The FQBN menu key of a field for this family, or undefined if the field does not apply. */
 export function optionKey(family: string, field: OptionField): string | undefined {
-  return Object.entries(OPTION_FIELDS[family] ?? {}).find(([, f]) => f === field)?.[0];
+  return Object.entries(fieldsFor(family)).find(([, f]) => f === field)?.[0];
 }
 
 function formatOptions(opts: Map<string, string>): string | undefined {
@@ -211,10 +216,10 @@ function formatOptions(opts: Map<string, string>): string | undefined {
  * (e.g. PSRAM on ESP32) go there, all others into extraOptions.
  */
 export function applyBoardOptions(board: BoardConfig, raw: string): void {
-  const fields = OPTION_FIELDS[board.family] ?? {};
+  const fields = fieldsFor(board.family);
   const extra = new Map(parseBoardOptions(board.extraOptions || ""));
   for (const [k, v] of parseBoardOptions(raw)) {
-    const field = fields[k];
+    const field = Object.hasOwn(fields, k) ? fields[k] : undefined;
     if (field) {
       board[field] = v;
       extra.delete(k);
@@ -242,7 +247,7 @@ export function buildFqbn(board: BoardConfig): string {
 
   // Only add menu options that exist for the board family; unknown options
   // make arduino-cli reject the whole FQBN.
-  for (const [key, field] of Object.entries(OPTION_FIELDS[board.family] ?? {})) {
+  for (const [key, field] of Object.entries(fieldsFor(board.family))) {
     const value = board[field];
     if (value) opts.set(key, value);
   }

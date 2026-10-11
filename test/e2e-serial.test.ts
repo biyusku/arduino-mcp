@@ -190,16 +190,23 @@ describe("releasePort", { skip: !supported || !commandExists("lsof") }, () => {
     await assert.rejects(releasePort("/home/me/.bashrc"), /Invalid serial port/);
   });
 
-  test("never touches holders of terminals or other devices", async () => {
+  test("never touches holders of terminals or other devices", async (t) => {
     const { releasePort, isReleasableSerialPort } = await import("../src/lib/ports.js");
+    // If the guard ever regresses, this test must fail, not SIGTERM the developer's processes.
+    const kills: unknown[] = [];
+    t.mock.method(process, "kill", (...args: unknown[]) => {
+      kills.push(args);
+      return true;
+    });
     const holder = await startFakeBoard();
     try {
       for (const dev of ["/dev/null", "/dev/tty", "/dev/zero", holder.port]) {
         assert.equal(await isReleasableSerialPort(dev), false, dev);
         assert.deepEqual(await releasePort(dev), [], dev);
       }
-      assert.equal(holder.proc.exitCode, null); // still alive
+      assert.deepEqual(kills, []);
     } finally {
+      t.mock.restoreAll();
       holder.proc.kill();
     }
   });

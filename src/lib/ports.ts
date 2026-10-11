@@ -7,6 +7,7 @@
  */
 import { existsSync } from "fs";
 import * as fs from "fs/promises";
+import * as path from "path";
 import { SerialPort } from "serialport";
 import { ARDUINO_CLI } from "./env.js";
 import { commandExists, run } from "./exec.js";
@@ -278,14 +279,24 @@ export async function assertPortAccessible(port: string): Promise<void> {
 // Real serial devices. Terminals (/dev/tty, /dev/pts/N, /dev/ttys00N) and
 // other devices such as /dev/null are open in nearly every process, so they
 // must never be "released".
-const SERIAL_DEVICE_RE = /^\/dev\/(?:tty(?:USB|ACM|AMA|S|XRUSB|WCH|MFD|SAC|THS|O)\d+|rfcomm\d+|(?:cu|tty)\.[^/]+)$/;
+// WCH's own Linux drivers name their ports ttyCH343USB0, ttyCH341USB0, ttyCH9344USB0, ttyWCHUSB0.
+const SERIAL_DEVICE_RE =
+  /^\/dev\/(?:tty(?:USB|ACM|AMA|S|XRUSB|MFD|SAC|THS|O|WCHUSB|CH\d+USB)\d+|rfcomm\d+|(?:cu|tty)\.[^/]+)$/;
+
+/** Name check for a resolved device path (see isReleasableSerialPort). */
+export function looksLikeSerialDevice(realPath: string): boolean {
+  if (SERIAL_DEVICE_RE.test(realPath)) return true;
+  // Linux: any other tty backed by real hardware has a device link in sysfs
+  // (terminals and ptys do not)
+  return process.platform === "linux" && /^\/dev\/tty[A-Za-z0-9]+$/.test(realPath) &&
+    existsSync(`/sys/class/tty/${path.basename(realPath)}/device`);
+}
 
 /** True if `port` (after resolving symlinks such as /dev/serial/by-id/...) is a serial character device. */
 export async function isReleasableSerialPort(port: string): Promise<boolean> {
   try {
     const real = await fs.realpath(port);
-    if (!SERIAL_DEVICE_RE.test(real)) return false;
-    return (await fs.stat(real)).isCharacterDevice();
+    return looksLikeSerialDevice(real) && (await fs.stat(real)).isCharacterDevice();
   } catch {
     return false;
   }

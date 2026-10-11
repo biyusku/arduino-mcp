@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergePorts, parseBoardListJson, pickPorts, portPresenceChecker, roleFor, type DetectedPort } from "../src/lib/ports.js";
+import {
+  looksLikeSerialDevice, mergePorts, parseBoardListJson, pickPorts, portPresenceChecker, roleFor, type DetectedPort,
+} from "../src/lib/ports.js";
 
 const CLI_JSON = JSON.stringify({
   detected_ports: [
@@ -142,5 +144,15 @@ test("a CH340 clone next to a native-USB ESP32 is not mistaken for one dual-USB 
   assert.equal(pick.uploadPort, "/dev/ttyACM0");
   assert.equal(pick.monitorPort, "/dev/ttyACM0");
   assert.deepEqual(pick.otherPorts.map((p) => p.port), ["/dev/ttyUSB0"]);
+});
+
+test("serial device names, including WCH vendor driver names; never terminals", () => {
+  for (const dev of ["/dev/ttyUSB0", "/dev/ttyACM12", "/dev/ttyS0", "/dev/ttyAMA0", "/dev/ttyCH343USB0", "/dev/ttyCH341USB1",
+    "/dev/ttyCH9344USB2", "/dev/ttyWCHUSB0", "/dev/rfcomm0", "/dev/cu.usbmodem1101", "/dev/tty.usbserial-110"]) {
+    assert.equal(looksLikeSerialDevice(dev), true, dev);
+  }
+  for (const dev of ["/dev/null", "/dev/tty", "/dev/pts/0", "/dev/ttys003", "/dev/console", "/dev/zero", "/dev/tty1"]) {
+    assert.equal(looksLikeSerialDevice(dev), false, dev);
+  }
 });
 

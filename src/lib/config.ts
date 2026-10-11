@@ -32,12 +32,20 @@ export interface Config {
   defaultBoard?: string;
 }
 
+/**
+ * Board ids are USB serial numbers or user input, so the map has no
+ * prototype: ids such as "__proto__" or "hasOwnProperty" are plain keys.
+ */
+function boardMap(boards: Record<string, BoardConfig> = {}): Record<string, BoardConfig> {
+  return Object.assign(Object.create(null) as Record<string, BoardConfig>, boards);
+}
+
 export async function loadConfig(file = CONFIG_FILE): Promise<Config> {
   let raw: string;
   try {
     raw = await fs.readFile(file, "utf-8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { boards: {} };
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { boards: boardMap() };
     throw e;
   }
   try {
@@ -45,6 +53,7 @@ export async function loadConfig(file = CONFIG_FILE): Promise<Config> {
     if (!cfg || typeof cfg !== "object" || typeof cfg.boards !== "object" || cfg.boards === null) {
       throw new Error("missing \"boards\" object");
     }
+    cfg.boards = boardMap(cfg.boards);
     for (const b of Object.values(cfg.boards)) migrateBoard(b);
     return cfg;
   } catch (e) {
@@ -143,7 +152,7 @@ export function updateConfig<T>(change: (cfg: Config) => T | Promise<T>, file = 
 }
 
 export function getDefaultBoard(cfg: Config): BoardConfig | null {
-  return cfg.defaultBoard ? cfg.boards[cfg.defaultBoard] ?? null : null;
+  return cfg.defaultBoard && Object.hasOwn(cfg.boards, cfg.defaultBoard) ? cfg.boards[cfg.defaultBoard] : null;
 }
 
 const ARCH_FAMILIES: Record<string, string> = {

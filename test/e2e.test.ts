@@ -396,6 +396,16 @@ describe("arduino-mcp over stdio", () => {
     }
   });
 
+  test("board ids that are Object.prototype names are just unknown ids", async () => {
+    for (const id of ["__proto__", "hasOwnProperty", "constructor", "toString"]) {
+      const r = await mcp.call("board_config", { action: "use", id });
+      assert.equal(r.isError, true, id);
+      assert.match(r.text, /No saved board/);
+    }
+    const r = await mcp.call("list_sketches"); // the server still answers
+    assert.equal(r.isError, false);
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

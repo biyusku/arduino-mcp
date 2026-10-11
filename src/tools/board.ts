@@ -193,7 +193,7 @@ export function registerBoardTools(server: McpServer): void {
         const id = args.id;
         if (!id) throw new UserError('action=use needs id; the saved boards are listed by board_config action=show.');
         return updateConfig((cfg) => {
-          const b = cfg.boards[id];
+          const b = Object.hasOwn(cfg.boards, id) ? cfg.boards[id] : undefined;
           if (!b) throw new UserError(`No saved board "${id}". Saved: ${Object.keys(cfg.boards).join(", ") || "none"}.`);
           cfg.defaultBoard = id;
           return ok(`✅ Default board is now ${id}.\nFQBN: ${buildFqbn(b) || "not set"}\nUpload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`);

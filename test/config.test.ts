@@ -10,6 +10,9 @@ import {
 } from "../src/lib/config.js";
 import { UserError } from "../src/lib/validate.js";
 
+/** loadConfig returns a prototype-less board map; compare as plain JSON */
+const plain = (v: unknown) => JSON.parse(JSON.stringify(v));
+
 const board = (b: Partial<BoardConfig>): BoardConfig => ({
   fqbn: "", family: "unknown", uploadPort: "", monitorPort: "", lastSeen: "", ...b,
 });
@@ -64,11 +67,11 @@ test("splitFqbn / mergeOptions", () => {
 test("config file: missing → empty, round trip, corrupt → error (never silently reset)", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-cfg-"));
   const file = path.join(dir, "cfg.json");
-  assert.deepEqual(await loadConfig(file), { boards: {} });
+  assert.deepEqual(plain(await loadConfig(file)), { boards: {} });
 
   const cfg = { boards: { X: board({ fqbn: "arduino:avr:uno", family: "avr" }) }, defaultBoard: "X" };
   await saveConfig(cfg, file);
-  assert.deepEqual(await loadConfig(file), cfg);
+  assert.deepEqual(plain(await loadConfig(file)), cfg);
   assert.deepEqual(fs.readdirSync(dir), ["cfg.json"]); // no temp files left behind
 
   fs.writeFileSync(file, "{ not json");
@@ -117,7 +120,7 @@ test("updateConfig saves nothing when the change throws", async () => {
     cfg.boards.X = board({});
     throw new UserError("nope");
   }, file), /nope/);
-  assert.deepEqual(await loadConfig(file), { boards: {} });
+  assert.deepEqual(plain(await loadConfig(file)), { boards: {} });
   await updateConfig((cfg) => { cfg.defaultBoard = "after-error"; }, file); // queue still works
   assert.equal((await loadConfig(file)).defaultBoard, "after-error");
 });
@@ -174,5 +177,18 @@ test("renameWithRetry retries Windows sharing errors, nothing else", async () =>
 
   const other = failing(["ENOENT"]);
   await assert.rejects(renameWithRetry("a", "b", other.rename, "win32"), /ENOENT/);
+});
+
+test("a board saved under the id __proto__ is an ordinary entry", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-cfg-"));
+  const file = path.join(dir, "cfg.json");
+  await updateConfig((cfg) => {
+    cfg.boards["__proto__"] = board({ fqbn: "arduino:avr:uno", family: "avr" });
+    cfg.defaultBoard = "__proto__";
+  }, file);
+  const cfg = await loadConfig(file);
+  assert.equal(Object.keys(cfg.boards).length, 1);
+  assert.equal(cfg.boards["__proto__"].fqbn, "arduino:avr:uno");
+  assert.equal(({} as Record<string, unknown>).fqbn, undefined); // Object.prototype untouched
 });
 

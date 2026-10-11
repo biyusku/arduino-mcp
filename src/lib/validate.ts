@@ -52,15 +52,16 @@ function isInsideOrSame(dir: string, p: string): boolean {
  * dangling "x.h -> ~/.bashrc"). Links that stay inside baseDir are fine.
  */
 export async function resolveInsideReal(baseDir: string, relPath: string): Promise<string> {
-  const target = resolveInside(baseDir, relPath);
   const base = path.resolve(baseDir);
+  const steps = pathsBelow(base, resolveInside(baseDir, relPath));
+  const target = steps[steps.length - 1];
   let realBase: string;
   try {
     realBase = await fs.realpath(base);
   } catch {
     return target; // the folder does not exist yet, so nothing in it can be a link
   }
-  for (let p = target; p !== base; p = path.dirname(p)) {
+  for (const p of steps) {
     let isLink: boolean;
     try {
       isLink = (await fs.lstat(p)).isSymbolicLink();
@@ -79,6 +80,21 @@ export async function resolveInsideReal(baseDir: string, relPath: string): Promi
     }
   }
   return target;
+}
+
+/**
+ * Every path from just below `base` down to `target`, spelled with base's
+ * letter case. (Walking up from target and comparing strings never ends on
+ * Windows, where "..\\Blink\\x" may resolve into base "blink".)
+ */
+export function pathsBelow(base: string, target: string, p: typeof path.posix = path): string[] {
+  const out: string[] = [];
+  let current = base;
+  for (const segment of p.relative(base, target).split(p.sep).filter(Boolean)) {
+    current = p.join(current, segment);
+    out.push(current);
+  }
+  return out;
 }
 
 /** A file inside a sketch folder, safe against traversal and symlink escapes. */

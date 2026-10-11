@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import {
   assertBuildFlags, assertFqbn, assertHost, assertHttpUrl, assertLibraryName, assertPlatformId, assertSerialPort, assertSketchName,
-  parseBoardOptions, resolveInside, sketchDir, UserError,
+  parseBoardOptions, pathsBelow, resolveInside, sketchDir, UserError,
 } from "../src/lib/validate.js";
 
 test("sketch names: valid", () => {
@@ -94,5 +94,12 @@ test("build flags: anything that can run code or read files is refused", () => {
   ]) {
     assert.throws(() => assertBuildFlags([flag]), UserError, flag);
   }
+});
+
+test("pathsBelow walks down from the base, also when Windows casing differs", () => {
+  assert.deepEqual(pathsBelow("/a/sk", "/a/sk/src/x.h", path.posix), ["/a/sk/src", "/a/sk/src/x.h"]);
+  const base = "C:\\Users\\me\\Arduino\\blink";
+  const target = path.win32.resolve(base, "..\\Blink\\blink.ino"); // same folder, other case
+  assert.deepEqual(pathsBelow(base, target, path.win32), ["C:\\Users\\me\\Arduino\\blink\\blink.ino"]);
 });
 

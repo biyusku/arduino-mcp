@@ -275,6 +275,16 @@ describe("arduino-mcp over stdio", () => {
     await mcp.call("project_init", { name: "ports", overwrite: true, upload_port: "/dev/ttyGONE0" });
     r = await mcp.call("upload_sketch", { name: "ports", free_port: false });
     assert.match(r.text, /upload port \/dev\/ttyGONE0 is not connected; using the saved board's \/dev\/null/);
+
+    // ...but never when the sketch is pinned to a different board: that would flash the wrong board
+    await mcp.call("project_init", { name: "ports", overwrite: true, fqbn: "arduino:avr:nano", upload_port: "/dev/ttyGONE0" });
+    const uploadsBefore = cliCalls(sb).filter((c) => c[0] === "upload").length;
+    r = await mcp.call("upload_sketch", { name: "ports", free_port: false });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /pins upload port \/dev\/ttyGONE0 for this sketch, but it is not connected/);
+    assert.equal(cliCalls(sb).filter((c) => c[0] === "upload").length, uploadsBefore);
+    r = await mcp.call("compile_sketch", { name: "ports" }); // compiling does not need the port
+    assert.match(r.text, /Compile succeeded \(arduino:avr:nano\)/);
   });
 
   test("board_info runs esptool only for ESP boards, judged by the port itself", { skip: !canRunFakeCli }, async () => {

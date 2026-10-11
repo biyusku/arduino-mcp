@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { CONFIG_FILENAME, readProjectConfig } from "../project.js";
 import { serialBuffer } from "../serial-buffer.js";
-import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, type BoardConfig } from "./config.js";
+import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, splitFqbn, type BoardConfig } from "./config.js";
 import { ARDUINO_CLI } from "./env.js";
 import { naturalCompare, run, sleep, type RunResult } from "./exec.js";
 import { assertPortAccessible, releasePort } from "./ports.js";
@@ -89,6 +89,8 @@ export interface Target {
   board: BoardConfig | null;
   /** Things the user should know about how the target was resolved */
   notes: string[];
+  /** Set when the upload port is pinned in arduino-mcp.yaml but not connected */
+  missingPinnedPort?: string;
 }
 
 /** On Windows COM ports are not files, so they cannot be checked this way. */
@@ -122,17 +124,25 @@ export async function resolveTarget(
 
   // Ports are validated in upload(): compiling must not depend on the port.
   // A port pinned in the yaml that is not present (the board re-enumerated)
-  // falls back to the saved board's port, which detect_board keeps current.
+  // falls back to the saved board's port, which detect_board keeps current,
+  // but only if we are building for that same saved board: otherwise the
+  // firmware would be flashed onto a different board.
   const notes: string[] = [];
-  const pick = (pinnedPort: string | undefined, savedPort: string | undefined, kind: string) => {
-    if (pinnedPort && !portPresent(pinnedPort) && savedPort && portPresent(savedPort)) {
-      notes.push(`${CONFIG_FILENAME}: ${kind} port ${pinnedPort} is not connected; using the saved board's ${savedPort}.`);
-      return savedPort;
+  const buildingForSavedBoard = !!board?.fqbn && splitFqbn(fqbn).base === board.fqbn;
+  let missingPinnedPort: string | undefined;
+  const pick = (pinnedPort: string | undefined, savedPort: string | undefined, kind: "upload" | "monitor") => {
+    if (pinnedPort && !portPresent(pinnedPort)) {
+      if (buildingForSavedBoard && savedPort && portPresent(savedPort)) {
+        notes.push(`${CONFIG_FILENAME}: ${kind} port ${pinnedPort} is not connected; using the saved board's ${savedPort}.`);
+        return savedPort;
+      }
+      if (kind === "upload") missingPinnedPort = pinnedPort;
     }
     return pinnedPort || savedPort || undefined;
   };
   const uploadPort = overrides.port || pick(pinned?.upload_port, board?.uploadPort, "upload");
   const monitorPort = pick(pinned?.monitor_port, board?.monitorPort, "monitor");
+  if (overrides.port) missingPinnedPort = undefined;
 
   return {
     dir,
@@ -144,6 +154,7 @@ export async function resolveTarget(
     buildFlags: assertBuildFlags(project?.build_flags || []),
     board,
     notes,
+    missingPinnedPort,
   };
 }
 
@@ -201,6 +212,12 @@ export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolea
   const port = t.uploadPort;
   if (!port) {
     throw new UserError('No upload port known. Run "detect_board", set one with "board_config", or pass port.');
+  }
+  if (t.missingPinnedPort) {
+    throw new UserError(
+      `${CONFIG_FILENAME} pins upload port ${t.missingPinnedPort} for this sketch, but it is not connected. ` +
+      "Connect that board, pass port, or change upload_port with project_init overwrite=true."
+    );
   }
   const { result: r, notes } = await withExclusivePort(port, { alsoPause: [t.monitorPort], freePort }, () =>
     cli(["upload", "--port", port, "--fqbn", t.fqbn, t.dir], 300_000)

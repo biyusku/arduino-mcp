@@ -11,6 +11,11 @@ export function fail(text: string): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
 
+/** ok() or fail(), so clients that branch on isError see failed builds/uploads as failures. */
+export function reply(success: boolean, text: string): CallToolResult {
+  return success ? ok(text) : fail(text);
+}
+
 /** Tool annotation presets (hints for MCP clients, e.g. to ask before destructive calls). */
 export const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 export const WRITES = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;

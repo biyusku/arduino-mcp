@@ -58,6 +58,7 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
   test("upload pauses and resumes the session and shows the real upload error", async () => {
     await mcp.call("create_sketch", { name: "up", template: "blink" });
     const r = await mcp.call("upload_sketch", { name: "up", fqbn: "arduino:avr:uno", port: board.port, free_port: false });
+    assert.equal(r.isError, true);
     assert.match(r.text, /Upload failed/);
     assert.match(r.text, /avrdude: ser_open\(\): can't open device/); // was hidden before
     assert.match(r.text, /Serial session on .* resumed/);

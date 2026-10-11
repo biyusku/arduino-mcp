@@ -25,6 +25,12 @@ test("success shows flash and RAM usage", () => {
   assert.match(text, /Global variables use 9 bytes/);
 });
 
+test("verbose keeps the full output, also on success", () => {
+  const out = "Using library Servo at version 1.2.1\nSketch uses 924 bytes (2%) of program storage space. Maximum is 32256 bytes.";
+  assert.doesNotMatch(formatCompileResult(true, out, "arduino:avr:uno"), /Using library/);
+  assert.match(formatCompileResult(true, out, "arduino:avr:uno", true), /--- arduino-cli output ---\nUsing library Servo/);
+});
+
 test("linker errors are shown", () => {
   const out = "/tmp/ccX.ltrans0.ltrans.o: In function `loop':\nx.ino:5: undefined reference to `missing()'\ncollect2: error: ld returned 1 exit status";
   const text = formatCompileResult(false, out, "arduino:avr:uno");

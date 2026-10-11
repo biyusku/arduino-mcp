@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cli } from "../lib/arduino.js";
 import { assertLibraryName, assertPlatformId } from "../lib/validate.js";
-import { DESTRUCTIVE, NETWORK, ok, READ_ONLY } from "./util.js";
+import { DESTRUCTIVE, fail, NETWORK, ok, READ_ONLY, reply } from "./util.js";
 
 /** Board manager URLs for cores that are not in Arduino's default index. */
 export const EXTRA_INDEX_URLS: Record<string, string> = {
@@ -29,7 +29,7 @@ export function registerLibraryTools(server: McpServer): void {
       const name = assertLibraryName(library);
       const spec = version ? `${name}@${assertLibraryName(version)}` : name;
       const r = await cli(["lib", "install", "--", spec], 180_000);
-      return ok(`${status(r.ok, `"${spec}" installed`, `"${spec}" could not be installed`)}:\n${r.output}`.trim());
+      return reply(r.ok, `${status(r.ok, `"${spec}" installed`, `"${spec}" could not be installed`)}:\n${r.output}`.trim());
     }
   );
 
@@ -44,7 +44,7 @@ export function registerLibraryTools(server: McpServer): void {
     async ({ library }) => {
       const name = assertLibraryName(library);
       const r = await cli(["lib", "uninstall", "--", name]);
-      return ok(`${status(r.ok, `"${name}" removed`, `"${name}" could not be removed`)}:\n${r.output}`.trim());
+      return reply(r.ok, `${status(r.ok, `"${name}" removed`, `"${name}" could not be removed`)}:\n${r.output}`.trim());
     }
   );
 
@@ -58,7 +58,7 @@ export function registerLibraryTools(server: McpServer): void {
     },
     async ({ filter }) => {
       const r = await cli(["lib", "list"]);
-      if (!r.ok) return ok(`❌ ${r.output}`);
+      if (!r.ok) return fail(`❌ ${r.output}`);
       let out = r.stdout;
       if (filter) {
         const [header, ...rows] = out.split("\n");
@@ -79,7 +79,7 @@ export function registerLibraryTools(server: McpServer): void {
     async ({ query }) => {
       const terms = query.split(/\s+/).filter(Boolean);
       const r = await cli(["lib", "search", "--", ...terms], 60_000);
-      if (!r.ok) return ok(`❌ ${r.output}`);
+      if (!r.ok) return fail(`❌ ${r.output}`);
       return ok(r.stdout.split("\n").slice(0, 50).join("\n") || "No results.");
     }
   );
@@ -95,7 +95,7 @@ export function registerLibraryTools(server: McpServer): void {
     async () => {
       const idx = await cli(["lib", "update-index"], 120_000);
       const r = await cli(["lib", "upgrade"], 300_000);
-      return ok(`${status(r.ok, "Libraries updated", "Library update failed")}:\n${idx.ok ? "" : idx.output + "\n"}${r.output}`.trim());
+      return reply(r.ok, `${status(r.ok, "Libraries updated", "Library update failed")}:\n${idx.ok ? "" : idx.output + "\n"}${r.output}`.trim());
     }
   );
 
@@ -121,7 +121,7 @@ export function registerLibraryTools(server: McpServer): void {
       const idx = await cli(["core", "update-index"], 300_000);
       if (!idx.ok) notes.push(idx.output);
       const r = await cli(["core", "install", id], 900_000);
-      return ok([status(r.ok, `${id} installed`, `${id} could not be installed`) + ":", ...notes, r.output].filter(Boolean).join("\n"));
+      return reply(r.ok, [status(r.ok, `${id} installed`, `${id} could not be installed`) + ":", ...notes, r.output].filter(Boolean).join("\n"));
     }
   );
 
@@ -136,7 +136,7 @@ export function registerLibraryTools(server: McpServer): void {
     async () => {
       const idx = await cli(["core", "update-index"], 300_000);
       const r = await cli(["core", "upgrade"], 900_000);
-      return ok(`${status(r.ok, "Platforms updated", "Platform update failed")}:\n${idx.ok ? "" : idx.output + "\n"}${r.output}`.trim());
+      return reply(r.ok, `${status(r.ok, "Platforms updated", "Platform update failed")}:\n${idx.ok ? "" : idx.output + "\n"}${r.output}`.trim());
     }
   );
 
@@ -150,7 +150,7 @@ export function registerLibraryTools(server: McpServer): void {
     },
     async () => {
       const r = await cli(["core", "list"]);
-      if (!r.ok) return ok(`❌ ${r.output}`);
+      if (!r.ok) return fail(`❌ ${r.output}`);
       return ok(r.stdout || "No platforms installed.");
     }
   );

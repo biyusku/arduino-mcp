@@ -9,7 +9,7 @@ import {
 import { assertPortAccessible, autoDetect, detectPorts, releasePort, type DetectedPort } from "../lib/ports.js";
 import { assertFqbn, assertSerialPort, parseBoardOptions, UserError } from "../lib/validate.js";
 import { serialBuffer } from "../serial-buffer.js";
-import { DESTRUCTIVE, ok, READ_ONLY, resolvePort, WRITES } from "./util.js";
+import { DESTRUCTIVE, fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 function roleLabel(p: DetectedPort): string {
   return p.role === "upload" ? "upload" : p.role === "monitor" ? "monitor" : "upload+monitor";
@@ -42,7 +42,7 @@ export function registerBoardTools(server: McpServer): void {
     async ({ save }) => {
       const d = await autoDetect();
       if (!d) {
-        return ok(
+        return fail(
           "❌ No board found.\n\nCheck:\n• Is the USB cable plugged in?\n• Does the cable carry data (not charge-only)?\n" +
           "• Is arduino-cli installed? (arduino_cli_check)"
         );
@@ -231,7 +231,7 @@ export function registerBoardTools(server: McpServer): void {
       const resolved = fqbn || board?.fqbn;
       if (!resolved) throw new UserError('No FQBN known. Run "detect_board" or pass fqbn.');
       const r = await cli(["board", "details", "--fqbn", splitFqbn(assertFqbn(resolved)).base]);
-      return ok(r.output || "No details returned.");
+      return reply(r.ok, r.output || "No details returned.");
     }
   );
 
@@ -322,7 +322,7 @@ export function registerBoardTools(server: McpServer): void {
       } finally {
         notes.push(...(await resume()));
       }
-      return ok([`${r.ok ? "✅" : "❌"} Flash erase ${r.ok ? "completed" : "failed"}:`, r.output, ...notes].filter(Boolean).join("\n"));
+      return reply(r.ok, [`${r.ok ? "✅" : "❌"} Flash erase ${r.ok ? "completed" : "failed"}:`, r.output, ...notes].filter(Boolean).join("\n"));
     }
   );
 }

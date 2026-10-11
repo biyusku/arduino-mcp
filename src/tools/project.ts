@@ -9,7 +9,7 @@ import {
   CONFIG_FILENAME, listProjectFiles, readProjectConfig, readProjectFile, writeProjectConfig, writeProjectFile,
   type ArduinoProject,
 } from "../project.js";
-import { NETWORK, ok, READ_ONLY, WRITES } from "./util.js";
+import { NETWORK, ok, READ_ONLY, reply, WRITES } from "./util.js";
 
 const nameArg = z.string().describe("Sketch name");
 
@@ -161,11 +161,13 @@ export function registerProjectTools(server: McpServer): void {
       if (!project) throw new UserError(`${name}/${CONFIG_FILENAME} not found.`);
       if (!project.libraries?.length) return ok("ℹ️ This project lists no libraries.");
       const results: string[] = [];
+      let allOk = true;
       for (const lib of project.libraries) {
         const r = await cli(["lib", "install", "--", assertLibraryName(lib)], 180_000);
+        allOk &&= r.ok;
         results.push(`${r.ok ? "✅" : "❌"} ${lib}: ${r.ok ? "installed" : r.output.split("\n").pop()}`);
       }
-      return ok(results.join("\n"));
+      return reply(allOk, results.join("\n"));
     }
   );
 }

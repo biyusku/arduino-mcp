@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getDefaultBoard, loadConfig, resetsOnOpen } from "../lib/config.js";
 import { assertPortAccessible, detectPorts } from "../lib/ports.js";
 import { serialBuffer } from "../serial-buffer.js";
-import { ok, READ_ONLY, resolvePort, WRITES } from "./util.js";
+import { fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 const portArg = z.string().optional().describe("Serial port (default: saved monitor port, then auto-detect)");
 const baudArg = z.number().int().positive().default(115200).describe("Baud rate");
@@ -120,7 +120,7 @@ export function registerSerialTools(server: McpServer): void {
     async ({ port, lines, clear }) => {
       const resolved = await resolvePort("monitor", port);
       const result = serialBuffer.read(resolved, lines, clear);
-      if (result === null) return ok(`❌ No background session on ${resolved}. Start one with serial_start.`);
+      if (result === null) return fail(`❌ No background session on ${resolved}. Start one with serial_start.`);
       if (result.length === 0) return ok(`📡 ${resolved}: buffer is empty (no data yet).`);
       return ok(`📡 ${resolved} — last ${result.length} lines:\n${result.join("\n")}`);
     }
@@ -139,7 +139,8 @@ export function registerSerialTools(server: McpServer): void {
         await serialBuffer.stopAll();
         return ok("✅ All background serial sessions stopped.");
       }
-      return ok(await serialBuffer.stop(port) ? `✅ Stopped session on ${port}.` : `❌ No session on ${port}.`);
+      const stopped = await serialBuffer.stop(port);
+      return reply(stopped, stopped ? `✅ Stopped session on ${port}.` : `❌ No session on ${port}.`);
     }
   );
 

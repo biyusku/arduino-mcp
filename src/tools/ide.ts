@@ -7,7 +7,7 @@ import { z } from "zod";
 import { cli } from "../lib/arduino.js";
 import { commandExists } from "../lib/exec.js";
 import { assertHttpUrl, sketchDir, UserError } from "../lib/validate.js";
-import { DESTRUCTIVE, ok, READ_ONLY, WRITES } from "./util.js";
+import { DESTRUCTIVE, ok, READ_ONLY, reply, WRITES } from "./util.js";
 
 interface IdeCommand {
   cmd: string;
@@ -131,18 +131,18 @@ export function registerIdeTools(server: McpServer): void {
     async ({ action, url, confirm }) => {
       if (action === "show") {
         const r = await cli(["config", "dump"]);
-        return ok(r.output);
+        return reply(r.ok, r.output);
       }
       if (action === "add_url") {
         if (!url) throw new UserError("add_url needs the url parameter.");
         const r = await cli(["config", "add", "board_manager.additional_urls", assertHttpUrl(url)]);
-        return ok(r.ok ? `✅ URL added: ${url}` : `❌ Could not add URL:\n${r.output}`);
+        return reply(r.ok, r.ok ? `✅ URL added: ${url}` : `❌ Could not add URL:\n${r.output}`);
       }
       if (!confirm) {
         throw new UserError("reset overwrites the arduino-cli configuration (board manager URLs etc.). Call again with confirm=true to proceed.");
       }
       const r = await cli(["config", "init", "--overwrite"]);
-      return ok(r.ok ? `✅ arduino-cli configuration reset.\n${r.output}` : `❌ Reset failed:\n${r.output}`);
+      return reply(r.ok, r.ok ? `✅ arduino-cli configuration reset.\n${r.output}` : `❌ Reset failed:\n${r.output}`);
     }
   );
 }

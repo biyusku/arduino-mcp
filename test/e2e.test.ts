@@ -174,6 +174,7 @@ describe("arduino-mcp over stdio", () => {
 
     r = await mcp.call("compile_sketch", { name: "proj" });
     assert.match(r.text, /Compile succeeded \(arduino:avr:mega\)/);
+    assert.equal(r.isError, false);
     assert.match(r.text, /Global variables use 9 bytes/);
     const call = cliCalls(sb).filter((c) => c[0] === "compile").at(-1)!;
     assert.deepEqual(call, [
@@ -194,12 +195,16 @@ describe("arduino-mcp over stdio", () => {
 
     await mcp.call("create_sketch", { name: "broken", template: "empty" });
     r = await mcp.call("compile_sketch", { name: "broken", fqbn: "arduino:avr:uno" });
+    assert.equal(r.isError, true); // clients that branch on isError must see the failure
     assert.match(r.text, /Compile failed/);
     assert.match(r.text, /broken\.ino:3:5 — 'foo' was not declared in this scope/);
 
     r = await mcp.call("compile_sketch", { name: "does_not_exist", fqbn: "arduino:avr:uno" });
     assert.equal(r.isError, true);
     assert.match(r.text, /not found/);
+
+    r = await mcp.call("compile_sketch", { name: "proj", verbose: true });
+    assert.match(r.text, /--- arduino-cli output ---\nSketch uses 924 bytes/);
 
     r = await mcp.call("project_install_deps", { name: "proj" });
     assert.match(r.text, /✅ Servo: installed/);

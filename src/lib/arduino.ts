@@ -49,7 +49,12 @@ function linkerErrors(output: string): string[] {
     .map((l) => l.trim());
 }
 
-export function formatCompileResult(ok: boolean, output: string, fqbn: string): string {
+export function formatCompileResult(ok: boolean, output: string, fqbn: string, verbose = false): string {
+  const summary = summarizeCompile(ok, output, fqbn);
+  return verbose && output ? `${summary}\n\n--- arduino-cli output ---\n${output}` : summary;
+}
+
+function summarizeCompile(ok: boolean, output: string, fqbn: string): string {
   const status = `${ok ? "✅" : "❌"} Compile ${ok ? "succeeded" : "failed"} (${fqbn})`;
 
   if (ok) {
@@ -156,7 +161,7 @@ export function compileArgs(t: Target, verbose = false): string[] {
 
 export async function compile(t: Target, verbose = false): Promise<{ ok: boolean; text: string }> {
   const r = await cli(compileArgs(t, verbose), 300_000);
-  return { ok: r.ok, text: formatCompileResult(r.ok, r.output, t.fqbn) };
+  return { ok: r.ok, text: formatCompileResult(r.ok, r.output, t.fqbn, verbose) };
 }
 
 /**

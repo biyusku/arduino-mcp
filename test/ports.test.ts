@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergePorts, parseBoardListJson, pickPorts, roleForVendor, type DetectedPort } from "../src/lib/ports.js";
+import { mergePorts, parseBoardListJson, pickPorts, portPresenceChecker, roleForVendor, type DetectedPort } from "../src/lib/ports.js";
 
 const CLI_JSON = JSON.stringify({
   detected_ports: [
@@ -116,5 +116,20 @@ test("two CH340 clones: each is its own board, not an upload/monitor pair", () =
   const pick = pickPorts([a, b])!;
   assert.equal(pick.uploadPort, pick.monitorPort);
   assert.equal(pick.otherPorts.length, 1);
+});
+
+test("port presence: COM ports are looked up in the port list on Windows", async () => {
+  const present = await portPresenceChecker("win32", async () => [{ path: "COM7" }, { path: "COM12" }]);
+  assert.equal(present("COM7"), true);
+  assert.equal(present("com12"), true);
+  assert.equal(present("\\\\.\\COM12"), true);
+  assert.equal(present("COM5"), false);
+
+  const unknown = await portPresenceChecker("win32", async () => { throw new Error("no access"); });
+  assert.equal(unknown("COM5"), true); // cannot tell: keep the configured port
+
+  const posix = await portPresenceChecker("linux");
+  assert.equal(posix("/dev/null"), process.platform !== "win32");
+  assert.equal(posix("/dev/ttyDOESNOTEXIST9"), false);
 });
 

@@ -9,7 +9,7 @@ import { serialBuffer } from "../serial-buffer.js";
 import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, splitFqbn, type BoardConfig } from "./config.js";
 import { ARDUINO_CLI } from "./env.js";
 import { naturalCompare, run, sleep, type RunResult } from "./exec.js";
-import { assertPortAccessible, releasePort } from "./ports.js";
+import { assertPortAccessible, portPresenceChecker, releasePort } from "./ports.js";
 import { assertBuildFlags, assertFqbn, assertSerialPort, sketchDir, UserError } from "./validate.js";
 
 export function cli(args: string[], timeoutMs = 30_000): Promise<RunResult> {
@@ -93,11 +93,6 @@ export interface Target {
   missingPinnedPort?: string;
 }
 
-/** On Windows COM ports are not files, so they cannot be checked this way. */
-function portPresent(port: string): boolean {
-  return process.platform === "win32" || fs.existsSync(port);
-}
-
 /**
  * Resolves what to build and where to upload. Precedence:
  * explicit tool argument > sketch's arduino-mcp.yaml > saved default board.
@@ -129,6 +124,7 @@ export async function resolveTarget(
   // firmware would be flashed onto a different board.
   const notes: string[] = [];
   const buildingForSavedBoard = !!board?.fqbn && splitFqbn(fqbn).base === board.fqbn;
+  const portPresent = pinned?.upload_port || pinned?.monitor_port ? await portPresenceChecker() : () => true;
   let missingPinnedPort: string | undefined;
   const pick = (pinnedPort: string | undefined, savedPort: string | undefined, kind: "upload" | "monitor") => {
     if (pinnedPort && !portPresent(pinnedPort)) {

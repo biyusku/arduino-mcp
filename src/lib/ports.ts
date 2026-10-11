@@ -5,6 +5,7 @@
  * (Linux/macOS/Windows); board names and FQBNs come from
  * `arduino-cli board list --format json`. Either source alone is enough.
  */
+import { existsSync } from "fs";
 import * as fs from "fs/promises";
 import { SerialPort } from "serialport";
 import { ARDUINO_CLI } from "./env.js";
@@ -153,6 +154,26 @@ export function mergePorts(osPorts: OsPort[], cliPorts: CliPort[]): DetectedPort
     });
   }
   return [...byPort.values()].sort((a, b) => a.port.localeCompare(b.port));
+}
+
+/**
+ * Returns a function telling whether a serial port is connected right now.
+ * Unix ports are device files; Windows COM ports are not files, so they are
+ * looked up in the system's port list (case-insensitively).
+ */
+export async function portPresenceChecker(
+  platform: string = process.platform,
+  list: () => Promise<Array<{ path: string }>> = () => SerialPort.list()
+): Promise<(port: string) => boolean> {
+  if (platform !== "win32") return (port) => existsSync(port);
+  const comName = (p: string) => p.replace(/^\\\\\.\\/, "").toUpperCase();
+  let present: Set<string>;
+  try {
+    present = new Set((await list()).map((p) => comName(p.path)));
+  } catch {
+    return () => true; // cannot tell; keep the configured port
+  }
+  return (port) => present.has(comName(port));
 }
 
 export async function detectPorts(): Promise<DetectedPort[]> {

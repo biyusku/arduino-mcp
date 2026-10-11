@@ -414,6 +414,15 @@ describe("arduino-mcp over stdio", () => {
     r = await mcp.call("board_config", { fqbn: "arduino:avr:uno" }); // action defaults to show
     assert.equal(r.isError, true);
     assert.match(r.text, /action=show does not change settings \(fqbn\); use action=set/);
+
+    // clients that send every field, empty when unused, still work
+    const empty = { id: "", fqbn: "", upload_port: "", monitor_port: "", flash_size: "", psram: "", cdc_on_boot: "",
+      partition_scheme: "", upload_speed: "", extra_options: "" };
+    r = await mcp.call("board_config", { ...empty, action: "show" });
+    assert.equal(r.isError, false, r.text);
+    r = await mcp.call("board_config", { ...empty, action: "set", fqbn: "arduino:avr:uno", upload_port: "/dev/ttyACM0" });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /FQBN: arduino:avr:uno\n/);
   });
 
   test("board ids that are Object.prototype names are just unknown ids", async () => {

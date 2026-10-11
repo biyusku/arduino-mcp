@@ -172,10 +172,13 @@ export function registerBoardTools(server: McpServer): void {
     async (args) => {
       // Never silently ignore arguments: they would end up applied to (or
       // missing from) a different board than the caller meant.
+      // Some clients send every optional field, empty when unused: "" only
+      // means "clear this option" for action=set.
+      const id = args.id || undefined;
       const settings = (["fqbn", "upload_port", "monitor_port", "flash_size", "psram", "cdc_on_boot", "partition_scheme",
-        "upload_speed", "extra_options"] as const).filter((k) => args[k] !== undefined);
-      if (args.id !== undefined && args.action !== "use") {
-        throw new UserError(`id is only used with action=use. To change board "${args.id}", select it first: board_config action=use id=${args.id}`);
+        "upload_speed", "extra_options"] as const).filter((k) => args[k] !== undefined && (args.action === "set" || args[k] !== ""));
+      if (id !== undefined && args.action !== "use") {
+        throw new UserError(`id is only used with action=use. To work with board "${id}", select it first: board_config action=use id=${id}`);
       }
       if (settings.length && args.action !== "set") {
         throw new UserError(`action=${args.action} does not change settings (${settings.join(", ")}); use action=set${args.action === "use" ? " in a separate call" : ""}.`);
@@ -208,7 +211,6 @@ export function registerBoardTools(server: McpServer): void {
       }
 
       if (args.action === "use") {
-        const id = args.id;
         if (!id) throw new UserError('action=use needs id; the saved boards are listed by board_config action=show.');
         return updateConfig((cfg) => {
           const b = Object.hasOwn(cfg.boards, id) ? cfg.boards[id] : undefined;

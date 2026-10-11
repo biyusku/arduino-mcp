@@ -7,7 +7,7 @@ import {
   type BoardConfig,
 } from "../lib/config.js";
 import { autoDetect, detectPorts, pickPorts, type DetectedPort } from "../lib/ports.js";
-import { assertFqbn, assertSerialPort, parseBoardOptions, UserError } from "../lib/validate.js";
+import { assertFqbn, assertSerialPort, assertUploadPort, parseBoardOptions, UserError } from "../lib/validate.js";
 import { DESTRUCTIVE, fail, familyForPort, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 /** Settings board_config can remove (clear) and the option field behind each. */
@@ -22,7 +22,7 @@ const CLEAR_FIELDS: Record<"flash_size" | "psram" | "cdc_on_boot" | "partition_s
 };
 
 function roleLabel(p: DetectedPort): string {
-  return p.role === "upload" ? "upload" : p.role === "monitor" ? "monitor" : "upload+monitor";
+  return p.role === "upload" ? "upload" : p.role === "monitor" ? "monitor" : p.role === "uf2" ? "upload (UF2 drive)" : "upload+monitor";
 }
 
 function describePort(p: DetectedPort): string {
@@ -133,11 +133,11 @@ export function registerBoardTools(server: McpServer): void {
       }
 
       const lines = ["🔍 Board detected"];
-      const samePort = d.uploadPort === d.monitorPort;
+      const samePort = d.uploadPort === d.monitorPort || d.uf2;
       lines.push(`Board:        ${boardName || "unknown"}`);
       lines.push(`FQBN:         ${fqbn || "not detected"}`);
       if (samePort) {
-        lines.push(`Port:         ${d.uploadPort} (upload + monitor)`);
+        lines.push(d.uf2 ? `Port:         ${d.uploadPort} (UF2 drive: upload only)` : `Port:         ${d.uploadPort} (upload + monitor)`);
       } else {
         lines.push(`Upload port:  ${d.uploadPort}`, `Monitor port: ${d.monitorPort}`);
       }
@@ -149,6 +149,12 @@ export function registerBoardTools(server: McpServer): void {
       const others = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)].filter((f) => f && splitFqbn(f).base !== fqbn);
       if (others.length) {
         lines.push(`Also matches: ${others.join(", ")} (change with board_config if needed)`);
+      }
+      if (d.uf2) {
+        lines.push(
+          "💡 The board is in BOOTSEL (UF2) mode, as every new Pico is. compile_and_upload works now; afterwards the board " +
+          "restarts with a serial port: run detect_board again to use it for the serial tools."
+        );
       }
       if (d.paired) {
         lines.push("(Two USB ports were combined as one dual-USB board. If they are two different boards, set the ports with board_config.)");
@@ -289,7 +295,7 @@ export function registerBoardTools(server: McpServer): void {
           b.fqbnSetByUser = true;
           if (options) applyBoardOptions(b, options);
         }
-        if (a.upload_port) b.uploadPort = assertSerialPort(a.upload_port);
+        if (a.upload_port) b.uploadPort = assertUploadPort(a.upload_port);
         if (a.monitor_port) b.monitorPort = assertSerialPort(a.monitor_port);
         if (a.extra_options) {
           parseBoardOptions(a.extra_options);

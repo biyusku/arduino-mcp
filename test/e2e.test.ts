@@ -523,6 +523,31 @@ describe("arduino-mcp over stdio", () => {
     }
   });
 
+  test("a Pico in BOOTSEL mode is detected and uploaded to via UF2", { skip: !canRunFakeCli }, async () => {
+    const own = makeSandbox();
+    const fresh = await connect(own);
+    try {
+      fs.writeFileSync(path.join(own.dir, "board-list.json"), JSON.stringify({
+        detected_ports: [{
+          port: { address: "UF2_Board", label: "UF2 Board", protocol: "uf2conv", properties: { pid: "0x2e8a", vid: "0x000a" } },
+          matching_boards: [{ name: "Raspberry Pi Pico", fqbn: "rp2040:rp2040:rpipico" }],
+        }],
+      }));
+      let r = await fresh.call("detect_board");
+      assert.match(r.text, /Port:\s+UF2_Board \(UF2 drive: upload only\)/);
+      assert.match(r.text, /BOOTSEL \(UF2\) mode/);
+      await fresh.call("create_sketch", { name: "pico", template: "blink" });
+      r = await fresh.call("compile_and_upload", { name: "pico" });
+      const upload = cliCalls(own).find((c) => c[0] === "upload");
+      assert.deepEqual(upload?.slice(0, 7), ["upload", "--port", "UF2_Board", "--protocol", "uf2conv", "--fqbn", "rp2040:rp2040:rpipico"]);
+      r = await fresh.call("serial_monitor", { seconds: 1 }); // no serial port while in BOOTSEL mode
+      assert.equal(r.isError, true);
+      assert.match(r.text, /No serial port found/);
+    } finally {
+      await fresh.close();
+    }
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

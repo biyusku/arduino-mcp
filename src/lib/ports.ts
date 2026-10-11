@@ -13,7 +13,13 @@ import { ARDUINO_CLI } from "./env.js";
 import { commandExists, run } from "./exec.js";
 import { assertSerialPort, UserError } from "./validate.js";
 
-export type PortRole = "upload" | "monitor" | "both";
+export type PortRole = "upload" | "monitor" | "both" | "uf2";
+
+/**
+ * Address arduino-pico's discovery reports for an RP2040/RP2350 in BOOTSEL
+ * mode (a UF2 drive, every new Pico): upload only, no serial port.
+ */
+export const UF2_PORT = "UF2_Board";
 
 export interface MatchingBoard {
   name: string;
@@ -137,6 +143,12 @@ export function mergePorts(osPorts: OsPort[], cliPorts: CliPort[]): DetectedPort
     });
   }
   for (const c of cliPorts) {
+    if (c.protocol === "uf2conv") {
+      byPort.set(c.address, {
+        port: c.address, vendor: c.vid, product: c.pid, serial: c.serial, description: c.label, role: "uf2", boards: c.boards,
+      });
+      continue;
+    }
     if (c.protocol && c.protocol !== "serial") continue;
     const existing = byPort.get(c.address);
     if (existing) {
@@ -167,7 +179,7 @@ export async function portPresenceChecker(
   platform: string = process.platform,
   list: () => Promise<Array<{ path: string }>> = () => SerialPort.list()
 ): Promise<(port: string) => boolean> {
-  if (platform !== "win32") return (port) => existsSync(port);
+  if (platform !== "win32") return (port) => port === UF2_PORT || existsSync(port);
   const comName = (p: string) => p.replace(/^\\\\\.\\/, "").toUpperCase();
   let present: Set<string>;
   try {
@@ -175,7 +187,7 @@ export async function portPresenceChecker(
   } catch {
     return () => true; // cannot tell; keep the configured port
   }
-  return (port) => present.has(comName(port));
+  return (port) => port === UF2_PORT || present.has(comName(port));
 }
 
 export async function detectPorts(): Promise<DetectedPort[]> {
@@ -193,6 +205,8 @@ export interface AutoDetectResult {
   alternatives: MatchingBoard[];
   /** True when two USB devices were combined as one dual-USB board (e.g. ESP32-S3: CH343 + native USB) */
   paired: boolean;
+  /** A Pico in BOOTSEL mode: upload via UF2, no serial monitor port yet */
+  uf2: boolean;
   /** USB serial ports that belong to other boards */
   otherPorts: DetectedPort[];
   /** All USB serial ports seen */
@@ -220,7 +234,7 @@ export function groupBoards(ports: DetectedPort[]): BoardCandidate[] {
   } else {
     for (const p of [...uploads, ...monitors]) candidates.push({ upload: p, monitor: p, paired: false });
   }
-  for (const p of ports.filter((p) => p.role === "both")) candidates.push({ upload: p, monitor: p, paired: false });
+  for (const p of ports.filter((p) => p.role === "both" || p.role === "uf2")) candidates.push({ upload: p, monitor: p, paired: false });
   // dual-USB pairs first, then boards arduino-cli could identify
   const rank = (c: BoardCandidate) => (c.paired ? 0 : c.upload.boards.length || c.monitor.boards.length ? 1 : 2);
   return candidates.map((c, i) => ({ c, i })).sort((x, y) => rank(x.c) - rank(y.c) || x.i - y.i).map((x) => x.c);
@@ -235,12 +249,13 @@ export function pickPorts(ports: DetectedPort[], port?: string): AutoDetectResul
   const boards = up.boards.length ? up.boards : mp.boards;
   return {
     uploadPort: up.port,
-    monitorPort: mp.port,
+    monitorPort: mp.role === "uf2" ? "" : mp.port,
     serial: up.serial || mp.serial || `${up.vendor}:${up.product}`,
     fqbn: boards[0]?.fqbn,
     boardName: boards[0]?.name,
     alternatives: boards.slice(1),
     paired: chosen.paired,
+    uf2: up.role === "uf2",
     otherPorts: ports.filter((p) => p !== up && p !== mp),
     ports,
   };

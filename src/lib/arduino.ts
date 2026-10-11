@@ -9,7 +9,7 @@ import { serialBuffer } from "../serial-buffer.js";
 import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, splitFqbn, type BoardConfig } from "./config.js";
 import { ARDUINO_CLI } from "./env.js";
 import { naturalCompare, run, sleep, type RunResult } from "./exec.js";
-import { assertPortAccessible, portPresenceChecker, releasePort } from "./ports.js";
+import { assertPortAccessible, portPresenceChecker, releasePort, UF2_PORT } from "./ports.js";
 import { assertBuildFlags, assertFqbn, assertSerialPort, sketchDir, UserError } from "./validate.js";
 
 export function cli(args: string[], timeoutMs = 30_000): Promise<RunResult> {
@@ -215,9 +215,12 @@ export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolea
       "Connect that board, pass port, or change upload_port with project_init overwrite=true."
     );
   }
-  const { result: r, notes } = await withExclusivePort(port, { alsoPause: [t.monitorPort], freePort }, () =>
-    cli(["upload", "--port", port, "--fqbn", t.fqbn, t.dir], 300_000)
-  );
+  const { result: r, notes } = port === UF2_PORT
+    // a UF2 drive is not a serial port: nothing to pause, free or check
+    ? { result: await cli(["upload", "--port", port, "--protocol", "uf2conv", "--fqbn", t.fqbn, t.dir], 300_000), notes: [] }
+    : await withExclusivePort(port, { alsoPause: [t.monitorPort], freePort }, () =>
+      cli(["upload", "--port", port, "--fqbn", t.fqbn, t.dir], 300_000)
+    );
   const head = `${r.ok ? "✅" : "❌"} Upload ${r.ok ? "succeeded" : "failed"} → ${port}`;
   // On failure show the full arduino-cli/avrdude/esptool output: that is where the reason is.
   return { ok: r.ok, text: [head, r.ok ? "" : r.output, ...t.notes, ...notes].filter(Boolean).join("\n") };

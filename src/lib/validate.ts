@@ -114,6 +114,11 @@ export function assertSerialPort(port: string): string {
   return port;
 }
 
+/** Upload ports: serial ports, or arduino-pico's UF2 drive of a Pico in BOOTSEL mode. */
+export function assertUploadPort(port: string): string {
+  return port === "UF2_Board" ? port : assertSerialPort(port);
+}
+
 const FQBN_RE = /^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]+)*)?$/;
 
 export function assertFqbn(fqbn: string): string {

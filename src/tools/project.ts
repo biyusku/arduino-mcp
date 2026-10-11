@@ -4,7 +4,7 @@ import * as path from "path";
 import { z } from "zod";
 import { cli } from "../lib/arduino.js";
 import { displayPath } from "../lib/env.js";
-import { assertBuildFlags, assertFqbn, assertLibraryName, assertSerialPort, sketchDir, UserError } from "../lib/validate.js";
+import { assertBuildFlags, assertFqbn, assertLibraryName, assertSerialPort, assertUploadPort, sketchDir, UserError } from "../lib/validate.js";
 import {
   CONFIG_FILENAME, listProjectFiles, readProjectConfig, readProjectFile, writeProjectConfig, writeProjectFile,
   type ArduinoProject,
@@ -45,7 +45,7 @@ export function registerProjectTools(server: McpServer): void {
         description: args.description || `Arduino project: ${args.name}`,
         version: "1.0.0",
         fqbn: args.fqbn ? assertFqbn(args.fqbn) : undefined,
-        upload_port: args.upload_port ? assertSerialPort(args.upload_port) : undefined,
+        upload_port: args.upload_port ? assertUploadPort(args.upload_port) : undefined,
         monitor_port: args.monitor_port ? assertSerialPort(args.monitor_port) : undefined,
         baud: args.baud || 115200,
         libraries: (args.libraries || []).map(assertLibraryName),

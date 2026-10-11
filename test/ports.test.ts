@@ -167,3 +167,20 @@ test("pickPorts can be asked for the board on a given port", () => {
   assert.equal(pickPorts([uno, nano], "/dev/ttyUSB9"), null);
 });
 
+test("a Pico in BOOTSEL mode (UF2 drive) is a board of its own, upload only", () => {
+  const uf2 = parseBoardListJson(JSON.stringify({ detected_ports: [{
+    port: { address: "UF2_Board", label: "UF2 Board", protocol: "uf2conv", properties: { mac: "ffffffffffff", pid: "0x2e8a", vid: "0x000a" } },
+    matching_boards: [{ name: "Raspberry Pi Pico", fqbn: "rp2040:rp2040:rpipico" }],
+  }] }));
+  const native = port({ port: "/dev/ttyACM0", vendor: "303a", product: "1001" });
+  const merged = mergePorts([], uf2);
+  assert.equal(merged[0].role, "uf2");
+  const pick = pickPorts(merged)!;
+  assert.equal(pick.uploadPort, "UF2_Board");
+  assert.equal(pick.monitorPort, "");
+  assert.equal(pick.uf2, true);
+  assert.equal(pick.fqbn, "rp2040:rp2040:rpipico");
+  // never paired with a native-USB port of another board
+  assert.equal(pickPorts([...merged, native])!.paired, false);
+});
+

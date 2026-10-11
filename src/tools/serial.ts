@@ -147,7 +147,7 @@ export function registerSerialTools(server: McpServer): void {
       if (ports.length === 0) return ok("No USB serial ports connected.");
       return ok(ports.map((p) => [
         `Port:      ${p.port}`,
-        `Role:      ${p.role === "upload" ? "upload only" : p.role === "monitor" ? "monitor only" : "upload + monitor"}`,
+        `Role:      ${p.role === "upload" ? "upload only" : p.role === "monitor" ? "monitor only" : p.role === "uf2" ? "UF2 drive (BOOTSEL), upload only" : "upload + monitor"}`,
         `Device:    ${p.description || "unknown"}`,
         `USB ID:    ${p.vendor}:${p.product}`,
         `Serial no: ${p.serial || "unknown"}`,

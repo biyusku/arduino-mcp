@@ -29,7 +29,7 @@ Claude Code (or any MCP client) can write, compile, upload, monitor and diagram 
 |----------|----------|
 | ESP32 | ESP32, ESP32-S3, ESP32-S2, ESP32-C3 |
 | Arduino AVR | Uno, Mega, Nano, Leonardo, Micro |
-| RP2040 | Raspberry Pi Pico, Arduino Nano RP2040 |
+| RP2040 | Raspberry Pi Pico (also in BOOTSEL/UF2 mode for the first upload), Arduino Nano RP2040 |
 | SAMD | Arduino Zero, MKR series |
 | ESP8266 | NodeMCU, Wemos D1 |
 | Any arduino-cli compatible board | STM32, Renesas (Uno R4), ... |

@@ -216,6 +216,27 @@ describe("arduino-mcp over stdio", () => {
     assert.equal(r.isError, true);
   });
 
+  test("detect_board keeps a board type the user chose, with its options", { skip: !canRunFakeCli }, async () => {
+    fs.writeFileSync(path.join(sb.dir, "board-list.json"), JSON.stringify({
+      detected_ports: [{
+        port: { address: "/dev/ttyACM0", protocol: "serial", properties: { vid: "0x303a", pid: "0x1001", serialNumber: "S3SERIAL" } },
+        matching_boards: [{ name: "ESP32S3 Dev Module", fqbn: "esp32:esp32:esp32s3" }, { name: "LOLIN S3", fqbn: "esp32:esp32:lolin_s3" }],
+      }],
+    }));
+    let r = await mcp.call("detect_board");
+    assert.match(r.text, /FQBN:\s+esp32:esp32:esp32s3\n/);
+    assert.match(r.text, /Also matches: esp32:esp32:lolin_s3/);
+
+    r = await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:lolin_s3", psram: "opi", flash_size: "16M" });
+    assert.match(r.text, /FQBN: esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
+
+    r = await mcp.call("detect_board"); // e.g. after re-plugging
+    assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3\n/);
+    assert.match(r.text, /Keeping your board choice esp32:esp32:lolin_s3/);
+    r = await mcp.call("board_config", { action: "show" });
+    assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

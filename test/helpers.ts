@@ -11,6 +11,7 @@ export const FAKE_CLI = path.join(ROOT, "test", "fixtures", "fake-arduino-cli.cj
 export const SERVER_ARGS = ["--import", "tsx", path.join(ROOT, "src", "index.ts")];
 
 export interface Sandbox {
+  /** test/fixtures/fake-arduino-cli.cjs prints <dir>/board-list.json for "board list" */
   dir: string;
   home: string;
   sketches: string;
@@ -34,6 +35,7 @@ export function makeSandbox(cli = FAKE_CLI): Sandbox {
     ARDUINO_MCP_CONFIG: path.join(home, ".arduino-mcp.json"),
     ARDUINO_CLI_PATH: cli,
     FAKE_CLI_LOG: cliLog,
+    FAKE_BOARD_LIST_FILE: path.join(dir, "board-list.json"),
   });
   return { dir, home, sketches, cliLog, env };
 }

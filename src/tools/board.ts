@@ -48,18 +48,54 @@ export function registerBoardTools(server: McpServer): void {
         );
       }
 
+      // What gets saved: by default the detected board; a board type the user
+      // chose earlier (board_config, or one of several matches) is kept.
+      let fqbn = d.fqbn ? splitFqbn(d.fqbn).base : "";
+      let boardName = d.boardName;
+      let keptChoice = false;
+      if (save) {
+        ({ fqbn, boardName, keptChoice } = await updateConfig((cfg) => {
+          const key = d.serial || `unknown_${Date.now()}`;
+          const prev = cfg.boards[key];
+          const candidates = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)]
+            .filter((f): f is string => !!f)
+            .map((f) => splitFqbn(f).base);
+          const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
+          const chosen = keepPrev ? prev!.fqbn : candidates[0] ?? "";
+          // Keep the saved options (flash size, PSRAM, ...) unless the board type changed.
+          const base: Partial<BoardConfig> = prev && prev.fqbn === chosen ? prev : {};
+          const name = keepPrev ? prev!.boardName || d.boardName : d.boardName || prev?.boardName;
+          cfg.boards[key] = {
+            ...base,
+            fqbn: chosen,
+            family: chosen ? getPlatformFamily(chosen) : "unknown",
+            uploadPort: d.uploadPort,
+            monitorPort: d.monitorPort,
+            boardName: name,
+            fqbnSetByUser: keepPrev ? prev!.fqbnSetByUser : undefined,
+            lastSeen: new Date().toISOString(),
+          };
+          cfg.defaultBoard = key;
+          return { fqbn: chosen, boardName: name, keptChoice: keepPrev && candidates.length > 0 && candidates[0] !== chosen };
+        }));
+      }
+
       const lines = ["🔍 Board detected"];
       const samePort = d.uploadPort === d.monitorPort;
-      lines.push(`Board:        ${d.boardName || "unknown"}`);
-      lines.push(`FQBN:         ${d.fqbn || "not detected"}`);
+      lines.push(`Board:        ${boardName || "unknown"}`);
+      lines.push(`FQBN:         ${fqbn || "not detected"}`);
       if (samePort) {
         lines.push(`Port:         ${d.uploadPort} (upload + monitor)`);
       } else {
         lines.push(`Upload port:  ${d.uploadPort}`, `Monitor port: ${d.monitorPort}`);
       }
       lines.push(`Serial no:    ${d.serial || "unknown"}`);
-      if (d.alternatives.length) {
-        lines.push(`Also matches: ${d.alternatives.map((b) => b.fqbn).join(", ")} (change with board_config if needed)`);
+      if (keptChoice) {
+        lines.push(`Keeping your board choice ${fqbn} (arduino-cli's first match is ${d.fqbn}).`);
+      }
+      const others = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)].filter((f) => f && splitFqbn(f).base !== fqbn);
+      if (others.length) {
+        lines.push(`Also matches: ${others.join(", ")} (change with board_config if needed)`);
       }
       if (d.paired) {
         lines.push("(Two USB ports were combined as one dual-USB board. If they are two different boards, set the ports with board_config.)");
@@ -68,26 +104,7 @@ export function registerBoardTools(server: McpServer): void {
         lines.push("", "⚠️ Other boards are connected; if the wrong one was picked, set the ports with board_config:");
         lines.push(...d.otherPorts.map(describePort));
       }
-
       if (save) {
-        const fqbn = await updateConfig((cfg) => {
-          const key = d.serial || `unknown_${Date.now()}`;
-          const prev = cfg.boards[key];
-          const fqbn = d.fqbn ? splitFqbn(d.fqbn).base : prev?.fqbn || "";
-          // Keep user-chosen options (flash size, PSRAM, ...) unless the board type changed.
-          const base: Partial<BoardConfig> = prev && prev.fqbn === fqbn ? prev : {};
-          cfg.boards[key] = {
-            ...base,
-            fqbn,
-            family: fqbn ? getPlatformFamily(fqbn) : "unknown",
-            uploadPort: d.uploadPort,
-            monitorPort: d.monitorPort,
-            boardName: d.boardName || prev?.boardName,
-            lastSeen: new Date().toISOString(),
-          };
-          cfg.defaultBoard = key;
-          return fqbn;
-        });
         lines.push("", "✅ Saved as default board.");
         if (!fqbn) {
           lines.push(
@@ -164,6 +181,7 @@ export function registerBoardTools(server: McpServer): void {
           }
           b.fqbn = base;
           b.family = getPlatformFamily(base);
+          b.fqbnSetByUser = true;
           if (options) applyBoardOptions(b, options);
         }
         if (args.upload_port !== undefined) b.uploadPort = args.upload_port ? assertSerialPort(args.upload_port) : "";

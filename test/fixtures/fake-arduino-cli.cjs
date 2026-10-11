@@ -10,7 +10,8 @@ const [cmd, sub] = args;
 if (cmd === "version") {
   console.log("arduino-cli  Version: 1.5.1-fake");
 } else if (cmd === "board" && sub === "list") {
-  console.log(JSON.stringify({ detected_ports: [] }));
+  const file = process.env.FAKE_BOARD_LIST_FILE;
+  console.log(file && fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : JSON.stringify({ detected_ports: [] }));
 } else if (cmd === "compile") {
   const dir = args[args.length - 1];
   if (dir.endsWith("broken")) {

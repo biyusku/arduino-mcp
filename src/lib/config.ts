@@ -22,6 +22,8 @@ export interface BoardConfig {
   /** Any other board menu options, "key=value,key2=value2" */
   extraOptions?: string;
   boardName?: string;
+  /** The FQBN was chosen with board_config; detect_board keeps it */
+  fqbnSetByUser?: boolean;
   lastSeen: string;
 }
 

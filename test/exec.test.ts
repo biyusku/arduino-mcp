@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
-import { commandExists, naturalCompare, processTree, run } from "../src/lib/exec.js";
+import { commandExists, naturalCompare, processTree, run, TreeKiller, type ProcInfo } from "../src/lib/exec.js";
 
 test("arguments are passed literally, never through a shell", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-exec-"));
@@ -123,5 +123,38 @@ test("naturalCompare orders version numbers numerically", () => {
     ["arduino-ide_2.3.9_Linux_64bit.AppImage", "arduino-ide_2.3.10_Linux_64bit.AppImage", "arduino-ide_2.10.0_Linux_64bit.AppImage"]
   );
   assert.deepEqual(["4.9.1", "4.10.0", "5.0.2"].sort(naturalCompare).reverse(), ["5.0.2", "4.10.0", "4.9.1"]);
+});
+
+test("TreeKiller never signals a pid that was reused after the child exited", () => {
+  let table: ProcInfo[] = [
+    { pid: 100, ppid: process.pid, pgid: 100 }, // the child
+    { pid: 101, ppid: 100, pgid: 101 },         // tool in its own group, ignores SIGTERM
+    { pid: 102, ppid: 100, pgid: 100 },         // same-group helper
+  ];
+  const kills: string[] = [];
+  const killer = new TreeKiller(100, { platform: "linux", readTable: () => table, kill: (pid, sig) => void kills.push(`${sig} ${pid}`) });
+
+  killer.signal("SIGTERM");
+  assert.deepEqual(kills.sort(), ["SIGTERM -100", "SIGTERM -101", "SIGTERM 100", "SIGTERM 101", "SIGTERM 102"].sort());
+
+  // the child and its helper are gone; pid 100 now belongs to an unrelated group leader
+  killer.markExited();
+  table = [{ pid: 100, ppid: 1, pgid: 100 }, { pid: 101, ppid: 1, pgid: 101 }];
+  kills.length = 0;
+  killer.signal("SIGKILL");
+  assert.deepEqual(kills.sort(), ["SIGKILL -101", "SIGKILL 101"]);
+});
+
+test("TreeKiller on Windows: one taskkill /T /F while the child lives, none after it exited", () => {
+  const calls: number[] = [];
+  const killer = new TreeKiller(4242, { platform: "win32", taskkill: (pid) => void calls.push(pid) });
+  killer.signal("SIGTERM");
+  killer.signal("SIGKILL");
+  assert.deepEqual(calls, [4242]);
+
+  const exited = new TreeKiller(4243, { platform: "win32", taskkill: (pid) => void calls.push(pid) });
+  exited.markExited();
+  exited.signal("SIGTERM");
+  assert.deepEqual(calls, [4242]);
 });
 

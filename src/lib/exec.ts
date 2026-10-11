@@ -23,7 +23,7 @@ export interface RunOptions {
   killGraceMs?: number;
 }
 
-interface ProcInfo {
+export interface ProcInfo {
   pid: number;
   ppid: number;
   pgid: number;
@@ -65,44 +65,79 @@ export function processTree(root: number, table: ProcInfo[] = readProcessTable()
   return { pids, groups: [...groups] };
 }
 
+export interface KillDeps {
+  platform: string;
+  readTable: () => ProcInfo[];
+  kill: (pid: number, sig: NodeJS.Signals) => void;
+  taskkill: (pid: number) => void;
+}
+
+const defaultKillDeps: KillDeps = {
+  platform: process.platform,
+  readTable: readProcessTable,
+  kill: (pid, sig) => process.kill(pid, sig),
+  taskkill: (pid) => {
+    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+  },
+};
+
 /**
  * Kills a child and everything it started. arduino-cli runs avrdude/esptool
  * in process groups of their own, so signalling the child's group is not
- * enough: the process tree is read first (orphans are re-parented once the
- * child dies) and every group and process in it gets the signal.
+ * enough: the process tree is read while the child is alive and every group
+ * and process in it gets the signal.
+ *
+ * Once the child has exited its pid may be reused, so from then on only the
+ * recorded processes that still exist (same pid and same group) are
+ * signalled. On Windows, taskkill /T /F is forceful and walks the tree from
+ * the live child, so it runs once and never after the child exited.
  */
-class TreeKiller {
+export class TreeKiller {
   private pids = new Set<number>();
   private groups = new Set<number>();
+  private exited = false;
+  private taskkilled = false;
+  private readonly deps: KillDeps;
 
-  constructor(private readonly root: number | undefined) {
+  constructor(private readonly root: number | undefined, deps: Partial<KillDeps> = {}) {
+    this.deps = { ...defaultKillDeps, ...deps };
     if (root) this.groups.add(root); // the child leads its own group (detached)
+  }
+
+  /** The child itself has exited (and was reaped): its pid may be reused from now on. */
+  markExited(): void {
+    this.exited = true;
   }
 
   signal(sig: NodeJS.Signals): void {
     const root = this.root;
     if (!root) return;
-    if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(root), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+    if (this.deps.platform === "win32") {
+      if (this.exited || this.taskkilled) return;
+      this.taskkilled = true;
+      this.deps.taskkill(root);
       return;
     }
-    const tree = processTree(root);
-    tree.pids.forEach((p) => this.pids.add(p));
-    tree.groups.forEach((g) => this.groups.add(g));
-    for (const g of this.groups) {
+    const kill = (pid: number) => {
       try {
-        process.kill(-g, sig);
-      } catch {
-        // group already gone
-      }
-    }
-    for (const p of [root, ...this.pids]) {
-      try {
-        process.kill(p, sig);
+        this.deps.kill(pid, sig);
       } catch {
         // already gone
       }
+    };
+    const table = this.deps.readTable();
+    if (!this.exited) {
+      const tree = processTree(root, table);
+      tree.pids.forEach((p) => this.pids.add(p));
+      tree.groups.forEach((g) => this.groups.add(g));
     }
+    // recorded processes that still exist, identified by pid and group
+    const live = table.filter((p) => this.pids.has(p.pid) && this.groups.has(p.pgid));
+    const liveGroups = new Set(live.map((p) => p.pgid));
+    if (!this.exited) liveGroups.add(root);
+    for (const g of liveGroups) kill(-g);
+    for (const p of live) kill(p.pid);
+    if (!this.exited) kill(root);
   }
 }
 
@@ -192,6 +227,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
       finish(null, err.code === "ENOENT" ? `Command not found: ${file}` : err.message);
     });
     child.on("exit", (code) => {
+      killer.markExited();
       // Normally "close" follows once the pipes are drained. If a leftover
       // grandchild keeps them open, do not wait for it forever.
       timers.push(setTimeout(() => finish(code, timedOut ? timeoutNote() : undefined), 2_000));

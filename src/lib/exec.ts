@@ -87,10 +87,14 @@ const defaultKillDeps: KillDeps = {
  * enough: the process tree is read while the child is alive and every group
  * and process in it gets the signal.
  *
- * Once the child has exited its pid may be reused, so from then on only the
- * recorded processes that still exist (same pid and same group) are
- * signalled. On Windows, taskkill /T /F is forceful and walks the tree from
- * the live child, so it runs once and never after the child exited.
+ * Once the child has exited, its pid may be reused. A process group id,
+ * however, cannot be handed out again while the group has members, so a
+ * recorded group that still has members is still ours, unless a different
+ * process now owns the group's number: for the child's group that means any
+ * process with the child's pid after it exited, and for other groups a new
+ * direct child of this server (another run()). On Windows, taskkill /T /F is
+ * forceful and walks the tree from the live child, so it runs at most once
+ * and never after the child exited.
  */
 export class TreeKiller {
   private pids = new Set<number>();
@@ -131,12 +135,27 @@ export class TreeKiller {
       tree.pids.forEach((p) => this.pids.add(p));
       tree.groups.forEach((g) => this.groups.add(g));
     }
-    // recorded processes that still exist, identified by pid and group
-    const live = table.filter((p) => this.pids.has(p.pid) && this.groups.has(p.pgid));
-    const liveGroups = new Set(live.map((p) => p.pgid));
-    if (!this.exited) liveGroups.add(root);
-    for (const g of liveGroups) kill(-g);
-    for (const p of live) kill(p.pid);
+
+    if (table.length === 0) {
+      // ps is unavailable: use what was recorded (pid reuse within the few
+      // seconds of a kill is practically impossible on POSIX systems)
+      this.groups.forEach((g) => kill(-g));
+      this.pids.forEach((p) => kill(p));
+      if (!this.exited) kill(root);
+      return;
+    }
+
+    const byPid = new Map(table.map((p) => [p.pid, p]));
+    const groupsWithMembers = new Set(table.map((p) => p.pgid));
+    const notOurs = (p: ProcInfo | undefined) =>
+      !!p && ((p.pid === root && this.exited) || (p.pid !== root && p.ppid === process.pid));
+    for (const g of this.groups) {
+      if (!groupsWithMembers.has(g) || notOurs(byPid.get(g))) continue;
+      kill(-g);
+    }
+    for (const p of table) {
+      if (this.pids.has(p.pid) && this.groups.has(p.pgid) && !notOurs(p)) kill(p.pid);
+    }
     if (!this.exited) kill(root);
   }
 }

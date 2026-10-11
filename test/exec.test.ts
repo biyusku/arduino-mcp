@@ -125,24 +125,78 @@ test("naturalCompare orders version numbers numerically", () => {
   assert.deepEqual(["4.9.1", "4.10.0", "5.0.2"].sort(naturalCompare).reverse(), ["5.0.2", "4.10.0", "4.9.1"]);
 });
 
-test("TreeKiller never signals a pid that was reused after the child exited", () => {
-  let table: ProcInfo[] = [
+function fakeKiller(initial: ProcInfo[]) {
+  const state = { table: initial, kills: [] as string[] };
+  const killer = new TreeKiller(100, {
+    platform: "linux",
+    readTable: () => state.table,
+    kill: (pid, sig) => void state.kills.push(`${sig} ${pid}`),
+  });
+  return { killer, state, kills: () => state.kills.splice(0).sort() };
+}
+
+test("TreeKiller: records the tree while the child lives, never signals a reused pid after it exited", () => {
+  const { killer, state, kills } = fakeKiller([
     { pid: 100, ppid: process.pid, pgid: 100 }, // the child
     { pid: 101, ppid: 100, pgid: 101 },         // tool in its own group, ignores SIGTERM
     { pid: 102, ppid: 100, pgid: 100 },         // same-group helper
-  ];
-  const kills: string[] = [];
-  const killer = new TreeKiller(100, { platform: "linux", readTable: () => table, kill: (pid, sig) => void kills.push(`${sig} ${pid}`) });
-
+  ]);
   killer.signal("SIGTERM");
-  assert.deepEqual(kills.sort(), ["SIGTERM -100", "SIGTERM -101", "SIGTERM 100", "SIGTERM 101", "SIGTERM 102"].sort());
+  assert.deepEqual(kills(), ["SIGTERM -100", "SIGTERM -101", "SIGTERM 100", "SIGTERM 101", "SIGTERM 102"].sort());
 
-  // the child and its helper are gone; pid 100 now belongs to an unrelated group leader
+  // child and helper are gone; pid 100 now belongs to an unrelated group leader
   killer.markExited();
-  table = [{ pid: 100, ppid: 1, pgid: 100 }, { pid: 101, ppid: 1, pgid: 101 }];
-  kills.length = 0;
+  state.table = [{ pid: 100, ppid: 1, pgid: 100 }, { pid: 101, ppid: 1, pgid: 101 }];
   killer.signal("SIGKILL");
-  assert.deepEqual(kills.sort(), ["SIGKILL -101", "SIGKILL 101"]);
+  assert.deepEqual(kills(), ["SIGKILL -101", "SIGKILL 101"]);
+});
+
+test("TreeKiller: after the child exited, its group is still killed while leftovers remain", () => {
+  // first signal only after exit (timeout in the exit→close window, or shutdown): nothing recorded yet
+  const { killer, state, kills } = fakeKiller([{ pid: 102, ppid: 1, pgid: 100 }]);
+  killer.markExited();
+  killer.signal("SIGTERM");
+  assert.deepEqual(kills(), ["SIGTERM -100"]); // pid 100 is free while group 100 has members: still ours
+
+  // a recorded tool group whose remaining member was never recorded
+  state.table = [{ pid: 100, ppid: process.pid, pgid: 100 }, { pid: 101, ppid: 100, pgid: 101 }];
+  const second = fakeKiller(state.table);
+  second.killer.signal("SIGTERM");
+  second.kills();
+  second.killer.markExited();
+  second.state.table = [{ pid: 103, ppid: 1, pgid: 101 }];
+  second.killer.signal("SIGKILL");
+  assert.deepEqual(second.kills(), ["SIGKILL -101"]);
+});
+
+test("TreeKiller: a recorded pid reused by a new direct child of this server is left alone", () => {
+  const { killer, state, kills } = fakeKiller([{ pid: 100, ppid: process.pid, pgid: 100 }, { pid: 101, ppid: 100, pgid: 101 }]);
+  killer.signal("SIGTERM");
+  kills();
+  killer.markExited();
+  state.table = [{ pid: 101, ppid: process.pid, pgid: 101 }]; // e.g. the next run()'s arduino-cli
+  killer.signal("SIGKILL");
+  assert.deepEqual(kills(), []);
+});
+
+test("TreeKiller: without ps, falls back to the recorded groups", () => {
+  const { killer, state, kills } = fakeKiller([]);
+  killer.signal("SIGTERM");
+  assert.deepEqual(kills(), ["SIGTERM -100", "SIGTERM 100"]);
+  killer.markExited();
+  state.table = [];
+  killer.signal("SIGKILL");
+  assert.deepEqual(kills(), ["SIGKILL -100"]);
+});
+
+test("timeout in the window between the child's exit and its pipes closing still kills the leftovers", posixOnly, async () => {
+  const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "amcp-tree-")), "pid");
+  const grandchild = `process.on('SIGTERM', () => {}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
+  // the child exits after 300 ms; the grandchild keeps the pipes open, so the timeout (1 s) fires after the exit
+  const child = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit' }); setTimeout(() => process.exit(0), 300)`;
+  const r = await run(process.execPath, ["-e", child], { timeoutMs: 1000, killGraceMs: 500 });
+  assert.match(r.output, /Timed out/);
+  assert.ok(await waitUntilDead(await readPid(pidFile), 5000), "grandchild survived");
 });
 
 test("TreeKiller on Windows: one taskkill /T /F while the child lives, none after it exited", () => {

@@ -385,6 +385,23 @@ describe("arduino-mcp over stdio", () => {
         await fresh3.close();
       }
 
+      // an unidentified board while "manual" is not the default: an honest, conditional hint
+      const own4 = makeSandbox();
+      const fresh4 = await connect(own4);
+      try {
+        await fresh4.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3", psram: "opi" });
+        const list = (ports: object[]) => fs.writeFileSync(path.join(own4.dir, "board-list.json"), JSON.stringify({ detected_ports: ports }));
+        list([{ port: { address: "/dev/ttyACM3", protocol: "serial", properties: { vid: "0x2341", pid: "0x0043", serialNumber: "UNO1" } },
+          matching_boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] }]);
+        await fresh4.call("detect_board"); // the Uno becomes the default, "manual" is kept
+        list([{ port: { address: "/dev/ttyUSB0", protocol: "serial", properties: { vid: "0x1a86", pid: "0x7523" } } }]);
+        r = await fresh4.call("detect_board");
+        assert.doesNotMatch(r.text, /is for this board type/);
+        assert.match(r.text, /could not be identified\. If this is the board of your manual setup \(esp32:esp32:esp32s3:PSRAM=opi\)/);
+      } finally {
+        await fresh4.close();
+      }
+
       // an unidentifiable clone takes over a manual Nano setup as well
       const own2 = makeSandbox();
       const fresh2 = await connect(own2);

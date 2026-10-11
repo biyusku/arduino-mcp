@@ -95,8 +95,10 @@ export function registerBoardTools(server: McpServer): void {
               : `Your manual setup (${manualFqbn}) does not match the detected board, so the detected one is now the default. `) +
               "Your manual setup is kept; switch back with: board_config action=use id=manual";
           } else if (manual?.fqbn && !prev && fits) {
-            manualNote = `💡 A saved manual setup (${manualFqbn}) is for this board type. ` +
-              `If this is that board, apply it with: board_config action=set fqbn=${manualFqbn}`;
+            manualNote = (candidates.length
+              ? `💡 A saved manual setup (${manualFqbn}) is for this board type. If this is that board, `
+              : `💡 The board type could not be identified. If this is the board of your manual setup (${manualFqbn}), `) +
+              `apply it with: board_config action=set fqbn=${manualFqbn}`;
           }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
           const chosen = keepPrev ? prev!.fqbn : candidates[0] ?? "";

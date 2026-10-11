@@ -3,7 +3,7 @@
  * argument array, so user/LLM supplied values can never be interpreted as
  * shell syntax.
  */
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -23,23 +23,85 @@ export interface RunOptions {
   killGraceMs?: number;
 }
 
+interface ProcInfo {
+  pid: number;
+  ppid: number;
+  pgid: number;
+}
+
+function readProcessTable(): ProcInfo[] {
+  const r = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf8", timeout: 5_000 });
+  if (r.status !== 0 || !r.stdout) return [];
+  return r.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter((f) => f.length === 3 && f.every(Number.isInteger))
+    .map(([pid, ppid, pgid]) => ({ pid, ppid, pgid }));
+}
+
 /**
- * Kills a child and everything it started (e.g. avrdude/esptool under
- * arduino-cli), so nothing keeps holding the serial port after a timeout.
+ * All descendants of `root` and their process groups (POSIX). This server's
+ * own process group is never included.
  */
-function killTree(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (!pid) return;
-  if (process.platform === "win32") {
-    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
-    return;
+export function processTree(root: number, table: ProcInfo[] = readProcessTable()): { pids: number[]; groups: number[] } {
+  const children = new Map<number, ProcInfo[]>();
+  for (const p of table) {
+    const list = children.get(p.ppid) ?? [];
+    list.push(p);
+    children.set(p.ppid, list);
   }
-  try {
-    process.kill(-pid, signal); // the child leads its own process group (detached)
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // already gone
+  const ownGroup = table.find((p) => p.pid === process.pid)?.pgid;
+  const pids: number[] = [];
+  const groups = new Set<number>();
+  const queue = [root];
+  while (queue.length) {
+    for (const c of children.get(queue.shift()!) ?? []) {
+      if (pids.includes(c.pid)) continue;
+      pids.push(c.pid);
+      if (c.pgid > 1 && c.pgid !== ownGroup) groups.add(c.pgid);
+      queue.push(c.pid);
+    }
+  }
+  return { pids, groups: [...groups] };
+}
+
+/**
+ * Kills a child and everything it started. arduino-cli runs avrdude/esptool
+ * in process groups of their own, so signalling the child's group is not
+ * enough: the process tree is read first (orphans are re-parented once the
+ * child dies) and every group and process in it gets the signal.
+ */
+class TreeKiller {
+  private pids = new Set<number>();
+  private groups = new Set<number>();
+
+  constructor(private readonly root: number | undefined) {
+    if (root) this.groups.add(root); // the child leads its own group (detached)
+  }
+
+  signal(sig: NodeJS.Signals): void {
+    const root = this.root;
+    if (!root) return;
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(root), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+      return;
+    }
+    const tree = processTree(root);
+    tree.pids.forEach((p) => this.pids.add(p));
+    tree.groups.forEach((g) => this.groups.add(g));
+    for (const g of this.groups) {
+      try {
+        process.kill(-g, sig);
+      } catch {
+        // group already gone
+      }
+    }
+    for (const p of [root, ...this.pids]) {
+      try {
+        process.kill(p, sig);
+      } catch {
+        // already gone
+      }
     }
   }
 }
@@ -67,14 +129,17 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
     child.stderr.setEncoding("utf8");
 
     const timeoutNote = () => `Timed out after ${Math.round(timeoutMs / 1000)}s`;
+    const killer = new TreeKiller(child.pid);
 
     timers.push(setTimeout(() => {
       timedOut = true;
-      killTree(child.pid, "SIGTERM");
-      timers.push(setTimeout(() => {
-        killTree(child.pid, "SIGKILL");
+      killer.signal("SIGTERM");
+      // Not in `timers`: SIGKILL must still follow even if run() already
+      // returned because the child itself exited (leftovers may ignore SIGTERM).
+      setTimeout(() => {
+        killer.signal("SIGKILL");
         finish(null, timeoutNote());
-      }, killGraceMs));
+      }, killGraceMs).unref();
     }, timeoutMs));
 
     child.stdout.on("data", (s: string) => {

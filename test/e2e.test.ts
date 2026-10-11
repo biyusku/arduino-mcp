@@ -237,6 +237,32 @@ describe("arduino-mcp over stdio", () => {
     assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
   });
 
+  test("project ports: v3 files are ignored, unpinned by default, stale pinned ports fall back", { skip: !canRunFakeCli }, async () => {
+    await mcp.call("board_config", { action: "set", fqbn: "arduino:avr:uno", upload_port: "/dev/null" }); // /dev/null: present on every POSIX system
+    await mcp.call("create_sketch", { name: "ports", template: "blink" });
+
+    // v3 file with a stale port and another board: must not override the saved board
+    fs.writeFileSync(path.join(sb.sketches, "ports", "arduino-mcp.yaml"),
+      "# arduino-mcp project config\n# https://github.com/birusk/arduino-mcp\n\nname: ports\ndescription: Arduino project: ports\n" +
+      "fqbn: esp32:esp32:esp32\nupload_port: /dev/ttyGONE0\nlibraries:\n  - Servo\n");
+    let r = await mcp.call("compile_sketch", { name: "ports" });
+    assert.match(r.text, /Compile succeeded \(arduino:avr:uno\)/);
+    r = await mcp.call("project_info", { name: "ports" });
+    assert.match(r.text, /written by arduino-mcp v3/);
+    assert.match(r.text, /Libs:\s+Servo/);
+
+    // project_init no longer copies the saved board into the file
+    r = await mcp.call("project_init", { name: "ports", overwrite: true });
+    assert.match(r.text, /FQBN:\s+saved board/);
+    const yaml = fs.readFileSync(path.join(sb.sketches, "ports", "arduino-mcp.yaml"), "utf-8");
+    assert.doesNotMatch(yaml, /fqbn|upload_port|monitor_port/);
+
+    // a pinned port that is not connected falls back to the saved board's port
+    await mcp.call("project_init", { name: "ports", overwrite: true, upload_port: "/dev/ttyGONE0" });
+    r = await mcp.call("upload_sketch", { name: "ports", free_port: false });
+    assert.match(r.text, /upload port \/dev\/ttyGONE0 is not connected; using the saved board's \/dev\/null/);
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

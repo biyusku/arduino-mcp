@@ -38,7 +38,7 @@ test("unparseable failure falls back to raw output", () => {
 });
 
 test("build flags become compiler extra_flags properties", () => {
-  const t: Target = { dir: "/s/x", fqbn: "arduino:avr:uno", family: "avr", buildFlags: ["-DDEBUG=1", "-O2"], board: null };
+  const t: Target = { dir: "/s/x", fqbn: "arduino:avr:uno", family: "avr", buildFlags: ["-DDEBUG=1", "-O2"], board: null, notes: [] };
   assert.deepEqual(compileArgs(t), [
     "compile", "--fqbn", "arduino:avr:uno",
     "--build-property", "compiler.cpp.extra_flags=-DDEBUG=1 -O2",

@@ -4,7 +4,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readProjectConfig } from "../project.js";
+import { CONFIG_FILENAME, readProjectConfig } from "../project.js";
 import { serialBuffer } from "../serial-buffer.js";
 import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, type BoardConfig } from "./config.js";
 import { ARDUINO_CLI } from "./env.js";
@@ -82,6 +82,13 @@ export interface Target {
   monitorPort?: string;
   buildFlags: string[];
   board: BoardConfig | null;
+  /** Things the user should know about how the target was resolved */
+  notes: string[];
+}
+
+/** On Windows COM ports are not files, so they cannot be checked this way. */
+function portPresent(port: string): boolean {
+  return process.platform === "win32" || fs.existsSync(port);
 }
 
 /**
@@ -99,24 +106,39 @@ export async function resolveTarget(
   const [cfg, project] = await Promise.all([loadConfig(), readProjectConfig(sketch)]);
   const board = getDefaultBoard(cfg);
 
-  const fqbn = overrides.fqbn || project?.fqbn || (board ? buildFqbn(board) : "");
+  // v3 project files carry copies of the then-saved board; v3 never used them
+  const pinned = project && !project.legacy ? project : null;
+
+  const fqbn = overrides.fqbn || pinned?.fqbn || (board ? buildFqbn(board) : "");
   if (!fqbn) {
     throw new UserError('No board (FQBN) known. Run "detect_board", set one with "board_config", or pass fqbn.');
   }
   assertFqbn(fqbn);
 
-  // validated in upload(): compiling must not depend on the port
-  const uploadPort = overrides.port || project?.upload_port || board?.uploadPort || undefined;
+  // Ports are validated in upload(): compiling must not depend on the port.
+  // A port pinned in the yaml that is not present (the board re-enumerated)
+  // falls back to the saved board's port, which detect_board keeps current.
+  const notes: string[] = [];
+  const pick = (pinnedPort: string | undefined, savedPort: string | undefined, kind: string) => {
+    if (pinnedPort && !portPresent(pinnedPort) && savedPort && portPresent(savedPort)) {
+      notes.push(`${CONFIG_FILENAME}: ${kind} port ${pinnedPort} is not connected; using the saved board's ${savedPort}.`);
+      return savedPort;
+    }
+    return pinnedPort || savedPort || undefined;
+  };
+  const uploadPort = overrides.port || pick(pinned?.upload_port, board?.uploadPort, "upload");
+  const monitorPort = pick(pinned?.monitor_port, board?.monitorPort, "monitor");
 
   return {
     dir,
     fqbn,
     family: getPlatformFamily(fqbn),
     uploadPort,
-    monitorPort: project?.monitor_port || board?.monitorPort || undefined,
+    monitorPort,
     // the yaml may come from a downloaded sketch: only harmless compiler flags
     buildFlags: assertBuildFlags(project?.build_flags || []),
     board,
+    notes,
   };
 }
 
@@ -164,6 +186,7 @@ export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolea
   } finally {
     notes.push(...(await resume()));
   }
+  notes.unshift(...t.notes);
   const head = `${r.ok ? "✅" : "❌"} Upload ${r.ok ? "succeeded" : "failed"} → ${port}`;
   // On failure show the full arduino-cli/avrdude/esptool output: that is where the reason is.
   return { ok: r.ok, text: [head, r.ok ? "" : r.output, ...notes].filter(Boolean).join("\n") };

@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { z } from "zod";
 import { cli } from "../lib/arduino.js";
-import { buildFqbn, getDefaultBoard, loadConfig } from "../lib/config.js";
 import { displayPath } from "../lib/env.js";
 import { assertBuildFlags, assertFqbn, assertLibraryName, assertSerialPort, sketchDir, UserError } from "../lib/validate.js";
 import {
@@ -20,14 +19,15 @@ export function registerProjectTools(server: McpServer): void {
     {
       title: "Create project config",
       description:
-        `Creates ${CONFIG_FILENAME} for a sketch: board (FQBN), ports, baud, libraries and build flags. ` +
-        "compile/upload tools use these values for this sketch (explicit tool arguments still win).",
+        `Creates ${CONFIG_FILENAME} for a sketch: libraries, build flags, baud and, if given, a board (FQBN) and ports ` +
+        "pinned to this sketch. compile/upload tools use them for this sketch (explicit tool arguments still win); " +
+        "anything not pinned comes from the saved board, so detect_board/board_config changes keep applying.",
       inputSchema: {
         name: nameArg,
         description: z.string().optional().describe("Project description"),
-        fqbn: z.string().optional().describe("Board FQBN (default: saved board)"),
-        upload_port: z.string().optional().describe("Upload port (default: saved board)"),
-        monitor_port: z.string().optional().describe("Monitor port (default: saved board)"),
+        fqbn: z.string().optional().describe("Pin a board FQBN to this sketch (default: use the saved board)"),
+        upload_port: z.string().optional().describe("Pin an upload port to this sketch (default: use the saved board)"),
+        monitor_port: z.string().optional().describe("Pin a monitor port to this sketch (default: use the saved board)"),
         baud: z.number().int().positive().optional().describe("Serial baud rate (default 115200)"),
         libraries: z.array(z.string()).optional().describe('Required libraries, e.g. ["DHT sensor library", "FastLED"]'),
         build_flags: z.array(z.string()).optional().describe('Extra compiler flags, one per entry: -DNAME[=value], -UNAME, -O2, -g, -std=..., -W..., -f..., -m...'),
@@ -40,14 +40,13 @@ export function registerProjectTools(server: McpServer): void {
       if (!args.overwrite && fs.existsSync(existingFile)) {
         throw new UserError(`${displayPath(existingFile)} already exists. Use overwrite=true to replace it.`);
       }
-      const board = getDefaultBoard(await loadConfig());
       const project: ArduinoProject = {
         name: args.name,
         description: args.description || `Arduino project: ${args.name}`,
         version: "1.0.0",
-        fqbn: args.fqbn ? assertFqbn(args.fqbn) : (board ? buildFqbn(board) || undefined : undefined),
-        upload_port: args.upload_port ? assertSerialPort(args.upload_port) : board?.uploadPort || undefined,
-        monitor_port: args.monitor_port ? assertSerialPort(args.monitor_port) : board?.monitorPort || undefined,
+        fqbn: args.fqbn ? assertFqbn(args.fqbn) : undefined,
+        upload_port: args.upload_port ? assertSerialPort(args.upload_port) : undefined,
+        monitor_port: args.monitor_port ? assertSerialPort(args.monitor_port) : undefined,
         baud: args.baud || 115200,
         libraries: (args.libraries || []).map(assertLibraryName),
         build_flags: assertBuildFlags(args.build_flags || []),
@@ -55,9 +54,9 @@ export function registerProjectTools(server: McpServer): void {
       const file = await writeProjectConfig(args.name, project);
       return ok([
         `✅ Project config created: ${displayPath(file)}`,
-        `FQBN:     ${project.fqbn || "not set"}`,
-        `Upload:   ${project.upload_port || "not set"}`,
-        `Monitor:  ${project.monitor_port || "not set"}`,
+        `FQBN:     ${project.fqbn || "saved board"}`,
+        `Upload:   ${project.upload_port || "saved board"}`,
+        `Monitor:  ${project.monitor_port || "saved board"}`,
         `Baud:     ${project.baud}`,
         project.libraries?.length ? `Libs:     ${project.libraries.join(", ")}` : "",
         project.build_flags?.length ? `Flags:    ${project.build_flags.join(" ")}` : "",
@@ -81,9 +80,14 @@ export function registerProjectTools(server: McpServer): void {
         `📦 Project: ${project.name}`,
         project.description ? `Description: ${project.description}` : "",
         project.version ? `Version:  ${project.version}` : "",
-        `FQBN:     ${project.fqbn || "not set (saved board is used)"}`,
-        `Upload:   ${project.upload_port || "not set (saved board is used)"}`,
-        `Monitor:  ${project.monitor_port || "not set (saved board is used)"}`,
+        ...(project.legacy
+          ? ["FQBN/ports: saved board is used (this file was written by arduino-mcp v3, whose copies of the board",
+             "            settings are ignored; recreate it with project_init overwrite=true to pin a board)"]
+          : [
+            `FQBN:     ${project.fqbn || "not set (saved board is used)"}`,
+            `Upload:   ${project.upload_port || "not set (saved board is used)"}`,
+            `Monitor:  ${project.monitor_port || "not set (saved board is used)"}`,
+          ]),
         `Baud:     ${project.baud || 115200}`,
         project.libraries?.length ? `Libs:     ${project.libraries.join(", ")}` : "",
         project.build_flags?.length ? `Flags:    ${project.build_flags.join(" ")}` : "",

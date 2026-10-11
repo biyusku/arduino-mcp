@@ -74,3 +74,37 @@ test("symbolic links cannot be used to leave the sketch folder", { skip: process
   assert.match((await project.readProjectFile("linky", "alias.ino"))!, /void setup/);
 });
 
+test("files written by arduino-mcp v3 still load (and are marked legacy)", async () => {
+  const dir = path.join(tmp, "sketches", "oldproj");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "arduino-mcp.yaml"), [
+    "# arduino-mcp project config",
+    "# https://github.com/birusk/arduino-mcp",
+    "",
+    "name: oldproj",
+    "description: Arduino project: oldproj",
+    "version: 1.0.0",
+    "fqbn: esp32:esp32:esp32s3:CDCOnBoot=default,FlashSize=4M",
+    "upload_port: /dev/ttyACM1",
+    "monitor_port: /dev/ttyACM0",
+    "baud: 115200",
+    "libraries:",
+    "  - DHT sensor library",
+    "  - FastLED",
+    "",
+  ].join("\n"));
+  const cfg = await project.readProjectConfig("oldproj");
+  assert.equal(cfg?.legacy, true);
+  assert.equal(cfg?.description, "Arduino project: oldproj");
+  assert.equal(cfg?.fqbn, "esp32:esp32:esp32s3:CDCOnBoot=default,FlashSize=4M");
+  assert.equal(cfg?.baud, 115200);
+  assert.deepEqual(cfg?.libraries, ["DHT sensor library", "FastLED"]);
+
+  // rewriting it produces valid YAML without the legacy marker
+  const file = await project.writeProjectConfig("oldproj", { ...cfg!, description: "Arduino project: oldproj" });
+  assert.ok(!fs.readFileSync(file, "utf-8").includes("birusk"));
+  const again = await project.readProjectConfig("oldproj");
+  assert.equal(again?.legacy, undefined);
+  assert.equal(again?.description, "Arduino project: oldproj");
+});
+

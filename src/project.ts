@@ -17,6 +17,12 @@ export interface ArduinoProject {
   baud?: number;
   libraries?: string[];
   build_flags?: string[];
+  /**
+   * Written by arduino-mcp v3. v3 copied the saved board's fqbn and ports
+   * into the file but never used them; they are still ignored, so old files
+   * cannot override the board saved with detect_board/board_config.
+   */
+  legacy?: boolean;
 }
 
 export const CONFIG_FILENAME = "arduino-mcp.yaml";
@@ -26,6 +32,34 @@ const EXTRA_FILES = new Set([CONFIG_FILENAME, "wiring.md", "wiring.svg"]);
 const optString = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : String(v));
 const optStringList = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
 
+/** Second header line of every file written by arduino-mcp v3 */
+const V3_MARKER = "# https://github.com/birusk/arduino-mcp";
+
+/** The line-based format arduino-mcp v3 wrote: "key: value" and "  - item" lists. */
+export function parseV3Yaml(content: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  let listKey: string | null = null;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const item = line.match(/^\s+-\s+(.+)$/);
+    if (item && listKey) {
+      (result[listKey] as string[]).push(item[1].trim());
+      continue;
+    }
+    listKey = null;
+    const kv = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
+    if (!kv) continue;
+    if (kv[2] === "") {
+      result[kv[1]] = [];
+      listKey = kv[1];
+    } else {
+      result[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, "");
+    }
+  }
+  return result;
+}
+
 export async function readProjectConfig(sketchName: string): Promise<ArduinoProject | null> {
   const file = await sketchFile(sketchName, CONFIG_FILENAME);
   let content: string;
@@ -34,14 +68,18 @@ export async function readProjectConfig(sketchName: string): Promise<ArduinoProj
   } catch {
     return null;
   }
+  const legacy = content.includes(V3_MARKER);
   let parsed: Record<string, unknown>;
   try {
     parsed = (parse(content) ?? {}) as Record<string, unknown>;
   } catch (e) {
-    throw new UserError(`${CONFIG_FILENAME} in "${sketchName}" is not valid YAML: ${(e as Error).message}`);
+    // v3 wrote values unquoted (e.g. "description: Arduino project: x"), which is not valid YAML
+    if (!legacy) throw new UserError(`${CONFIG_FILENAME} in "${sketchName}" is not valid YAML: ${(e as Error).message}`);
+    parsed = parseV3Yaml(content);
   }
   const baud = parsed.baud === undefined ? undefined : Number(parsed.baud);
   return {
+    ...(legacy ? { legacy: true } : {}),
     name: sketchName,
     description: optString(parsed.description),
     version: optString(parsed.version),
@@ -57,7 +95,7 @@ export async function readProjectConfig(sketchName: string): Promise<ArduinoProj
 export function projectToYaml(config: ArduinoProject): string {
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(config)) {
-    if (v === undefined || v === null || (Array.isArray(v) && v.length === 0)) continue;
+    if (k === "legacy" || v === undefined || v === null || (Array.isArray(v) && v.length === 0)) continue;
     clean[k] = v;
   }
   return "# arduino-mcp project config\n" + stringify(clean);

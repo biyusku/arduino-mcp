@@ -186,6 +186,9 @@ build_flags:
 ```
 
 Compile and upload tools resolve settings in this order: **tool argument → `arduino-mcp.yaml` → saved board**.
+`project_init` only pins `fqbn` and ports you pass explicitly, so `detect_board`/`board_config` changes keep applying to the sketch.
+A pinned port that is not connected falls back to the saved board's port. Files written by arduino-mcp v3 are still read, but
+their `fqbn`/port entries (copies of the board saved back then, never used by v3) are ignored.
 `build_flags` are passed to the compiler as `compiler.cpp.extra_flags` / `compiler.c.extra_flags`. Because a sketch folder may come from
 anywhere, only harmless flags are accepted, one per entry: `-DNAME[=value]`, `-UNAME`, `-O<level>`, `-g`, `-std=...`, `-W<warning>`,
 `-f<option>[=<number>]`, `-m<option>`.

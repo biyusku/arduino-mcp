@@ -70,10 +70,16 @@ export interface KillDeps {
   readTable: () => ProcInfo[];
   kill: (pid: number, sig: NodeJS.Signals) => void;
   taskkill: (pid: number) => void;
+  /** True for the pid of another run() child that is still running */
+  isRunningChild: (pid: number) => boolean;
 }
+
+/** pids of run() children that have not exited yet */
+const runningChildren = new Set<number>();
 
 const defaultKillDeps: KillDeps = {
   platform: process.platform,
+  isRunningChild: (pid) => runningChildren.has(pid),
   readTable: readProcessTable,
   kill: (pid, sig) => process.kill(pid, sig),
   taskkill: (pid) => {
@@ -91,8 +97,9 @@ const defaultKillDeps: KillDeps = {
  * however, cannot be handed out again while the group has members, so a
  * recorded group that still has members is still ours, unless a different
  * process now owns the group's number: for the child's group that means any
- * process with the child's pid after it exited, and for other groups a new
- * direct child of this server (another run()). On Windows, taskkill /T /F is
+ * process with the child's pid after it exited, and for other groups another
+ * running run() child. (Not "any child of this server": when the server is
+ * PID 1 in a container, orphaned leftovers are re-parented to it.) On Windows, taskkill /T /F is
  * forceful and walks the tree from the live child, so it runs at most once
  * and never after the child exited.
  */
@@ -148,7 +155,7 @@ export class TreeKiller {
     const byPid = new Map(table.map((p) => [p.pid, p]));
     const groupsWithMembers = new Set(table.map((p) => p.pgid));
     const notOurs = (p: ProcInfo | undefined) =>
-      !!p && ((p.pid === root && this.exited) || (p.pid !== root && p.ppid === process.pid));
+      !!p && ((p.pid === root && this.exited) || (p.pid !== root && this.deps.isRunningChild(p.pid)));
     for (const g of this.groups) {
       if (!groupsWithMembers.has(g) || notOurs(byPid.get(g))) continue;
       kill(-g);
@@ -202,6 +209,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
     const timeoutNote = () => `Timed out after ${Math.round(timeoutMs / 1000)}s`;
     const killer = new TreeKiller(child.pid);
     liveTrees.add(killer);
+    if (child.pid) runningChildren.add(child.pid);
 
     timers.push(setTimeout(() => {
       timedOut = true;
@@ -247,6 +255,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
     });
     child.on("exit", (code) => {
       killer.markExited();
+      if (child.pid) runningChildren.delete(child.pid);
       // Normally "close" follows once the pipes are drained. If a leftover
       // grandchild keeps them open, do not wait for it forever.
       timers.push(setTimeout(() => finish(code, timedOut ? timeoutNote() : undefined), 2_000));

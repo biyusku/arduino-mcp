@@ -125,12 +125,13 @@ test("naturalCompare orders version numbers numerically", () => {
   assert.deepEqual(["4.9.1", "4.10.0", "5.0.2"].sort(naturalCompare).reverse(), ["5.0.2", "4.10.0", "4.9.1"]);
 });
 
-function fakeKiller(initial: ProcInfo[]) {
+function fakeKiller(initial: ProcInfo[], runningChildren: number[] = []) {
   const state = { table: initial, kills: [] as string[] };
   const killer = new TreeKiller(100, {
     platform: "linux",
     readTable: () => state.table,
     kill: (pid, sig) => void state.kills.push(`${sig} ${pid}`),
+    isRunningChild: (pid) => runningChildren.includes(pid),
   });
   return { killer, state, kills: () => state.kills.splice(0).sort() };
 }
@@ -169,14 +170,24 @@ test("TreeKiller: after the child exited, its group is still killed while leftov
   assert.deepEqual(second.kills(), ["SIGKILL -101"]);
 });
 
-test("TreeKiller: a recorded pid reused by a new direct child of this server is left alone", () => {
-  const { killer, state, kills } = fakeKiller([{ pid: 100, ppid: process.pid, pgid: 100 }, { pid: 101, ppid: 100, pgid: 101 }]);
+test("TreeKiller: a recorded pid reused by another running run() child is left alone", () => {
+  const { killer, state, kills } = fakeKiller([{ pid: 100, ppid: process.pid, pgid: 100 }, { pid: 101, ppid: 100, pgid: 101 }], [101]);
   killer.signal("SIGTERM");
   kills();
   killer.markExited();
   state.table = [{ pid: 101, ppid: process.pid, pgid: 101 }]; // e.g. the next run()'s arduino-cli
   killer.signal("SIGKILL");
   assert.deepEqual(kills(), []);
+});
+
+test("TreeKiller: a leftover re-parented to this server (server is PID 1 in a container) is still killed", () => {
+  const { killer, state, kills } = fakeKiller([{ pid: 100, ppid: process.pid, pgid: 100 }, { pid: 101, ppid: 100, pgid: 101 }]);
+  killer.signal("SIGTERM");
+  kills();
+  killer.markExited();
+  state.table = [{ pid: 101, ppid: process.pid, pgid: 101 }]; // the orphaned tool, now our child
+  killer.signal("SIGKILL");
+  assert.deepEqual(kills(), ["SIGKILL -101", "SIGKILL 101"]);
 });
 
 test("TreeKiller: without ps, falls back to the recorded groups", () => {

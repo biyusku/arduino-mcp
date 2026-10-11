@@ -69,17 +69,10 @@ export function registerBoardTools(server: McpServer): void {
               prev = manual;
               delete cfg.boards.manual;
             } else {
-              // The detected board wins; tell the user how to get their setup back
-              // (full FQBN incl. options), and drop the entry nothing could reach.
-              const full = buildFqbn(manual);
-              const restore = [
-                `fqbn=${full}`,
-                manual.uploadPort ? `upload_port=${manual.uploadPort}` : "",
-                manual.monitorPort ? `monitor_port=${manual.monitorPort}` : "",
-              ].filter(Boolean).join(" ");
-              manualNote = `Your manually configured board (${full}) does not match the detected board, so the detected ` +
-                `one is used. To use yours anyway: board_config action=set ${restore}`;
-              delete cfg.boards.manual;
+              // A different board: it becomes the default, the manual setup stays
+              // saved as it is (never mixed into the detected board's entry).
+              manualNote = `Your manually configured board (${buildFqbn(manual)}) does not match the detected board, so the ` +
+                "detected one is now the default. Your setup is kept; switch back with: board_config action=use id=manual";
             }
           }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
@@ -145,11 +138,13 @@ export function registerBoardTools(server: McpServer): void {
     {
       title: "Show or change board settings",
       description:
-        "Shows or updates the saved default board. ESP32 options: flash_size, psram, cdc_on_boot, partition_scheme, upload_speed. " +
+        "Shows or updates the saved default board, or switches the default to another saved board (action=use, id from show). " +
+        "ESP32 options: flash_size, psram, cdc_on_boot, partition_scheme, upload_speed. " +
         "ESP8266: upload_speed. Any other board menu option (e.g. Nano's cpu=atmega328old) goes into extra_options. " +
         "Pass an empty string to clear an option. Use board_options to see what a board supports.",
       inputSchema: {
-        action: z.enum(["show", "set"]).default("show"),
+        action: z.enum(["show", "set", "use"]).default("show"),
+        id: z.string().optional().describe("Saved board to make the default (action=use); IDs are listed by action=show"),
         fqbn: z.string().optional().describe("Board FQBN, e.g. arduino:avr:uno or esp32:esp32:esp32s3 (options after the 3rd ':' are kept)"),
         upload_port: z.string().optional().describe("Upload port, e.g. /dev/ttyACM1, /dev/cu.usbserial-110, COM4"),
         monitor_port: z.string().optional().describe("Serial monitor port"),
@@ -183,7 +178,21 @@ export function registerBoardTools(server: McpServer): void {
           isEspFamily(b.family) ? `Upload speed:   ${b.uploadSpeed || "board default"}` : null,
           b.extraOptions ? `Extra options:  ${b.extraOptions}` : null,
           `Last seen:      ${b.lastSeen}`,
+          ...Object.entries(cfg.boards)
+            .filter(([id]) => id !== cfg.defaultBoard)
+            .map(([id, o], i) => `${i === 0 ? "Other saved:    " : "                "}${id}  ${buildFqbn(o) || "no FQBN"}  ${o.uploadPort || ""}`.trimEnd()),
         ].filter((l) => l !== null).join("\n"));
+      }
+
+      if (args.action === "use") {
+        const id = args.id;
+        if (!id) throw new UserError('action=use needs id; the saved boards are listed by board_config action=show.');
+        return updateConfig((cfg) => {
+          const b = cfg.boards[id];
+          if (!b) throw new UserError(`No saved board "${id}". Saved: ${Object.keys(cfg.boards).join(", ") || "none"}.`);
+          cfg.defaultBoard = id;
+          return ok(`✅ Default board is now ${id}.\nFQBN: ${buildFqbn(b) || "not set"}\nUpload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`);
+        });
       }
 
       return updateConfig((cfg) => {

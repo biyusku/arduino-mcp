@@ -329,7 +329,7 @@ describe("arduino-mcp over stdio", () => {
       assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
       assert.match(r.text, /Upload port:\s+\/dev\/ttyACM0/);
 
-      // a manual setup that does not fit the detected board: the note restores it in one call
+      // a manual setup that does not fit the detected board stays saved, and can be selected again
       const own3 = makeSandbox();
       const fresh3 = await connect(own3);
       try {
@@ -342,12 +342,20 @@ describe("arduino-mcp over stdio", () => {
         }));
         r = await fresh3.call("detect_board");
         assert.match(r.text, /FQBN:\s+arduino:avr:uno\n/);
-        const restore = r.text.match(/board_config action=set fqbn=(\S+) upload_port=(\S+)/);
-        assert.deepEqual(restore?.slice(1), ["esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi", "/dev/ttyUSB9"]);
-        r = await fresh3.call("board_config", { action: "set", fqbn: restore![1], upload_port: restore![2] });
+        assert.match(r.text, /switch back with: board_config action=use id=manual/);
+        r = await fresh3.call("board_config", { action: "show" });
+        assert.match(r.text, /ID:\s+UNO1/);
+        assert.match(r.text, /Other saved:\s+manual\s+esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\s+\/dev\/ttyUSB9/);
+
+        r = await fresh3.call("board_config", { action: "use", id: "manual" });
         assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\nUpload: \/dev\/ttyUSB9/);
         const saved = JSON.parse(fs.readFileSync(own3.env.ARDUINO_MCP_CONFIG, "utf-8"));
-        assert.equal(saved.boards.manual, undefined);
+        assert.equal(saved.boards.UNO1.fqbn, "arduino:avr:uno"); // the Uno's entry is untouched
+        assert.equal(saved.boards.UNO1.uploadPort, "/dev/ttyACM3");
+
+        r = await fresh3.call("board_config", { action: "use", id: "nope" });
+        assert.equal(r.isError, true);
+        assert.match(r.text, /Saved: (manual, UNO1|UNO1, manual)/);
       } finally {
         await fresh3.close();
       }

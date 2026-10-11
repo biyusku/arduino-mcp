@@ -81,7 +81,7 @@ Ask in any language, for example:
 | Tool | Description |
 |------|-------------|
 | `detect_board` | Auto-detect board, save ports & FQBN (keeps your saved options) |
-| `board_config` | Show or update saved board settings (incl. manual setup when detection fails) |
+| `board_config` | Show or update saved board settings (incl. manual setup when detection fails), switch between saved boards (`action=use`) |
 | `board_options` | List all FQBN menu options of a board (flash, psram, cpu…) |
 | `list_boards` | List connected boards with upload/monitor roles |
 | `board_info` | USB details; chip, MAC, flash size for ESP boards (esptool) |

@@ -1,14 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { cli, esptool } from "../lib/arduino.js";
+import { cli, esptool, withExclusivePort } from "../lib/arduino.js";
 import {
   applyBoardOptions, buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, optionKey, setBoardOption,
   splitFqbn, updateConfig, type OptionField,
   type BoardConfig,
 } from "../lib/config.js";
-import { assertPortAccessible, autoDetect, detectPorts, releasePort, type DetectedPort } from "../lib/ports.js";
+import { autoDetect, detectPorts, pickPorts, type DetectedPort } from "../lib/ports.js";
 import { assertFqbn, assertSerialPort, parseBoardOptions, UserError } from "../lib/validate.js";
-import { serialBuffer } from "../serial-buffer.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 function roleLabel(p: DetectedPort): string {
@@ -261,9 +260,11 @@ export function registerBoardTools(server: McpServer): void {
       annotations: WRITES,
     },
     async ({ port }) => {
-      const resolved = await resolvePort("upload", port);
       const board = getDefaultBoard(await loadConfig());
-      const info = (await detectPorts()).find((p) => p.port === resolved);
+      const ports = await detectPorts(); // scanned once, also used to pick a default port
+      const resolved = port ? assertSerialPort(port) : board?.uploadPort || pickPorts(ports)?.uploadPort;
+      if (!resolved) throw new UserError('No serial port found. Plug in the board and run "detect_board", or pass port.');
+      const info = ports.find((p) => p.port === resolved);
 
       const lines = [`🔎 ${resolved}`];
       if (info) {
@@ -277,16 +278,16 @@ export function registerBoardTools(server: McpServer): void {
         lines.push("Port is not in the list of connected USB serial devices.");
       }
 
-      const esp = isEspFamily(board?.family) || info?.vendor === "303a" || !!info?.boards.some((b) => isEspFamily(getPlatformFamily(b.fqbn)));
-      if (esp) {
-        await assertPortAccessible(resolved);
-        const resume = await serialBuffer.pause([resolved]);
-        try {
-          const r = await esptool(["--port", resolved, "flash_id"]);
-          lines.push("", "esptool:", r.output || "(no output)");
-        } finally {
-          lines.push(...(await resume()));
-        }
+      // Decide from the port itself; the saved board only counts for its own ports
+      // (esptool on an Uno would reset it and fail confusingly).
+      const espByPort = !!info && (info.vendor === "303a" || info.boards.some((b) => isEspFamily(getPlatformFamily(b.fqbn))));
+      const otherBoardByPort = !!info && info.boards.length > 0 && !espByPort;
+      const isSavedBoardPort = !!board && (resolved === board.uploadPort || resolved === board.monitorPort);
+      if (espByPort || (isSavedBoardPort && isEspFamily(board!.family) && !otherBoardByPort)) {
+        const { result: r, notes } = await withExclusivePort(resolved, { freePort: false }, () =>
+          esptool(["--port", resolved, "flash_id"])
+        );
+        lines.push("", "esptool:", r.output || "(no output)", ...notes);
       }
       return ok(lines.join("\n"));
     }
@@ -309,19 +310,9 @@ export function registerBoardTools(server: McpServer): void {
         throw new UserError(`erase_flash only works on ESP32/ESP8266 boards; the saved board is "${board.family}".`);
       }
       const resolved = await resolvePort("upload", port);
-      const notes: string[] = [];
-      const resume = await serialBuffer.pause([resolved, ...(board?.monitorPort ? [board.monitorPort] : [])]);
-      let r;
-      try {
-        if (free_port) {
-          const stopped = await releasePort(resolved);
-          if (stopped.length) notes.push(`Stopped processes holding ${resolved}: ${stopped.join(", ")}`);
-        }
-        await assertPortAccessible(resolved);
-        r = await esptool(["--port", resolved, "erase_flash"], 120_000);
-      } finally {
-        notes.push(...(await resume()));
-      }
+      const { result: r, notes } = await withExclusivePort(resolved, { alsoPause: [board?.monitorPort], freePort: free_port }, () =>
+        esptool(["--port", resolved, "erase_flash"], 120_000)
+      );
       return reply(r.ok, [`${r.ok ? "✅" : "❌"} Flash erase ${r.ok ? "completed" : "failed"}:`, r.output, ...notes].filter(Boolean).join("\n"));
     }
   );

@@ -165,21 +165,23 @@ export async function compile(t: Target, verbose = false): Promise<{ ok: boolean
 }
 
 /**
- * Uploads over serial. Our own serial sessions on the board's ports are paused
- * and resumed afterwards; with freePort, other processes holding the port are
- * stopped (and reported).
+ * Runs `fn` with exclusive use of a serial port: pauses our own serial
+ * sessions on the given ports, optionally stops other programs holding the
+ * port (and gives them time to let go), checks access, and resumes the
+ * sessions afterwards. Returns fn's result plus notes for the user.
  */
-export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolean; text: string }> {
-  const port = t.uploadPort;
-  if (!port) {
-    throw new UserError('No upload port known. Run "detect_board", set one with "board_config", or pass port.');
-  }
+export async function withExclusivePort<T>(
+  port: string,
+  opts: { alsoPause?: Array<string | undefined>; freePort: boolean },
+  fn: () => Promise<T>
+): Promise<{ result: T; notes: string[] }> {
   assertSerialPort(port);
   const notes: string[] = [];
-  const resume = await serialBuffer.pause([port, ...(t.monitorPort ? [t.monitorPort] : [])]);
-  let r: RunResult;
+  const pause = [port, ...(opts.alsoPause ?? [])].filter((p): p is string => !!p);
+  const resume = await serialBuffer.pause(pause);
+  let result: T;
   try {
-    if (freePort) {
+    if (opts.freePort) {
       const stopped = await releasePort(port);
       if (stopped.length) {
         notes.push(`Stopped processes holding ${port}: ${stopped.join(", ")}`);
@@ -187,14 +189,25 @@ export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolea
       }
     }
     await assertPortAccessible(port);
-    r = await cli(["upload", "--port", port, "--fqbn", t.fqbn, t.dir], 300_000);
+    result = await fn();
   } finally {
     notes.push(...(await resume()));
   }
-  notes.unshift(...t.notes);
+  return { result, notes };
+}
+
+/** Uploads over serial (see withExclusivePort for how the port is handled). */
+export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolean; text: string }> {
+  const port = t.uploadPort;
+  if (!port) {
+    throw new UserError('No upload port known. Run "detect_board", set one with "board_config", or pass port.');
+  }
+  const { result: r, notes } = await withExclusivePort(port, { alsoPause: [t.monitorPort], freePort }, () =>
+    cli(["upload", "--port", port, "--fqbn", t.fqbn, t.dir], 300_000)
+  );
   const head = `${r.ok ? "✅" : "❌"} Upload ${r.ok ? "succeeded" : "failed"} → ${port}`;
   // On failure show the full arduino-cli/avrdude/esptool output: that is where the reason is.
-  return { ok: r.ok, text: [head, r.ok ? "" : r.output, ...notes].filter(Boolean).join("\n") };
+  return { ok: r.ok, text: [head, r.ok ? "" : r.output, ...t.notes, ...notes].filter(Boolean).join("\n") };
 }
 
 // ─── esptool ────────────────────────────────────────────────────────────────

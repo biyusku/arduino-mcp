@@ -36,6 +36,7 @@ export function makeSandbox(cli = FAKE_CLI): Sandbox {
     ARDUINO_CLI_PATH: cli,
     FAKE_CLI_LOG: cliLog,
     FAKE_BOARD_LIST_FILE: path.join(dir, "board-list.json"),
+    ESPTOOL_PATH: cli, // logs its arguments like arduino-cli
   });
   return { dir, home, sketches, cliLog, env };
 }

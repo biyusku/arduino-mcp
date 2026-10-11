@@ -268,6 +268,26 @@ describe("arduino-mcp over stdio", () => {
     assert.match(r.text, /upload port \/dev\/ttyGONE0 is not connected; using the saved board's \/dev\/null/);
   });
 
+  test("board_info runs esptool only for ESP boards, judged by the port itself", { skip: !canRunFakeCli }, async () => {
+    fs.writeFileSync(path.join(sb.dir, "board-list.json"), JSON.stringify({
+      detected_ports: [{
+        port: { address: "/dev/ttyACM5", protocol: "serial", properties: { vid: "0x2341", pid: "0x0043", serialNumber: "UNO1" } },
+        matching_boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }],
+      }],
+    }));
+    // saved board: an ESP32 on /dev/null (a device that exists everywhere)
+    await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32", upload_port: "/dev/null", monitor_port: "/dev/null" });
+    const esptoolCalls = () => cliCalls(sb).filter((c) => c.includes("flash_id"));
+
+    let r = await mcp.call("board_info", { port: "/dev/ttyACM5" }); // the Uno
+    assert.match(r.text, /Arduino Uno \(arduino:avr:uno\)/);
+    assert.equal(esptoolCalls().length, 0);
+
+    r = await mcp.call("board_info"); // the saved ESP32
+    assert.equal(r.isError, false, r.text);
+    assert.deepEqual(esptoolCalls(), [["--port", "/dev/null", "flash_id"]]);
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

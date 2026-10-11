@@ -7,7 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { after, before, describe, test } from "node:test";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { commandExists } from "../src/lib/exec.js";
-import { connect, makeSandbox, ROOT, SERVER_ARGS, startFakeBoard, type Sandbox } from "./helpers.js";
+import { cliCalls, connect, makeSandbox, ROOT, SERVER_ARGS, startFakeBoard, type Sandbox } from "./helpers.js";
 
 const supported = process.platform === "linux" && commandExists("python3");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -64,6 +64,15 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
     assert.match(r.text, /Serial session on .* resumed/);
     const status = await mcp.call("serial_status");
     assert.match(status.text, new RegExp(board.port));
+  });
+
+  test("erase_flash pauses and resumes the session like upload does", async () => {
+    await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32", upload_port: board.port, monitor_port: board.port });
+    const r = await mcp.call("erase_flash", { free_port: false });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /Flash erase completed/);
+    assert.match(r.text, /Serial session on .* resumed/);
+    assert.ok(cliCalls(sb).some((c) => c.join(" ") === `--port ${board.port} erase_flash`));
   });
 
   test("serial_stop", async () => {

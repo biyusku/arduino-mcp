@@ -396,6 +396,18 @@ describe("arduino-mcp over stdio", () => {
     }
   });
 
+  test("board_config rejects arguments that the action would ignore", async () => {
+    let r = await mcp.call("board_config", { action: "set", id: "manual", upload_port: "/dev/ttyACM0" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /id is only used with action=use/);
+    r = await mcp.call("board_config", { action: "use", id: "manual", upload_port: "/dev/ttyACM0" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /does not change settings \(upload_port\)/);
+    r = await mcp.call("board_config", { fqbn: "arduino:avr:uno" }); // action defaults to show
+    assert.equal(r.isError, true);
+    assert.match(r.text, /action=show does not change settings \(fqbn\); use action=set/);
+  });
+
   test("board ids that are Object.prototype names are just unknown ids", async () => {
     for (const id of ["__proto__", "hasOwnProperty", "constructor", "toString"]) {
       const r = await mcp.call("board_config", { action: "use", id });

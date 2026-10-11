@@ -163,6 +163,17 @@ export function registerBoardTools(server: McpServer): void {
       annotations: WRITES,
     },
     async (args) => {
+      // Never silently ignore arguments: they would end up applied to (or
+      // missing from) a different board than the caller meant.
+      const settings = (["fqbn", "upload_port", "monitor_port", "flash_size", "psram", "cdc_on_boot", "partition_scheme",
+        "upload_speed", "extra_options"] as const).filter((k) => args[k] !== undefined);
+      if (args.id !== undefined && args.action !== "use") {
+        throw new UserError(`id is only used with action=use. To change board "${args.id}", select it first: board_config action=use id=${args.id}`);
+      }
+      if (settings.length && args.action !== "set") {
+        throw new UserError(`action=${args.action} does not change settings (${settings.join(", ")}); use action=set${args.action === "use" ? " in a separate call" : ""}.`);
+      }
+
       if (args.action === "show") {
         const cfg = await loadConfig();
         const b = getDefaultBoard(cfg);

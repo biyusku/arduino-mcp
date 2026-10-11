@@ -1,15 +1,27 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDefaultBoard, loadConfig, resetsOnOpen } from "../lib/config.js";
+import { getDefaultBoard, loadConfig, resetsOnOpen, type BoardConfig } from "../lib/config.js";
 import { assertPortAccessible, detectPorts } from "../lib/ports.js";
 import { assertSerialPort, UserError } from "../lib/validate.js";
 import { serialBuffer } from "../serial-buffer.js";
-import { fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
+import { fail, familyForPort, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 const portArg = z.string().optional().describe("Serial port (default: saved monitor port, then auto-detect)");
 const baudArg = z.number().int().positive().default(115200).describe("Baud rate");
 const optionalBaudArg = z.number().int().positive().optional()
   .describe("Baud rate (default: the running background session's, else 115200)");
+
+// USB-serial bridges of boards that reset when the port is opened (DTR):
+// Uno/Mega (16U2), and the CH340/FTDI chips on Nano/Pro Mini clones.
+const AUTO_RESET_VENDORS = new Set(["2341", "2a03", "1a86", "0403"]);
+
+/** How long to wait after opening a port before sending: boards that reset on open need to boot first. */
+async function resetDelayFor(port: string, board: BoardConfig | null): Promise<number> {
+  const { family, info } = await familyForPort(port, board);
+  if (family !== "unknown") return resetsOnOpen(family) ? 2000 : 0;
+  const ch343 = info?.vendor === "1a86" && info.product === "55d3"; // ESP32-S3 dual-USB bridge, no DTR reset
+  return info && AUTO_RESET_VENDORS.has(info.vendor) && !ch343 ? 2000 : 0;
+}
 
 /**
  * A running background session fixes the baud rate; asking for another one
@@ -88,7 +100,8 @@ export function registerSerialTools(server: McpServer): void {
       const effective = effectiveBaud(resolved, baud);
       if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
       const board = getDefaultBoard(await loadConfig());
-      const openDelay = wait_after_open_ms ?? (resetsOnOpen(board?.family) ? 2000 : 0);
+      const openDelay = wait_after_open_ms ??
+        (serialBuffer.isRunning(resolved) ? 0 : await resetDelayFor(resolved, board));
       const data = newline ? `${message}\n` : message;
       const answer = await serialBuffer.send(resolved, effective, data, read_response ? response_seconds * 1000 : 0, openDelay);
       if (!read_response) return ok(`📤 Sent: "${message}"`);

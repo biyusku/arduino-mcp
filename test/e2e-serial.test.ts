@@ -89,6 +89,21 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
     assert.ok(cliCalls(sb).some((c) => c.join(" ") === `--port ${board.port} erase_flash`));
   });
 
+  test("send_serial waits for boards that reset on open, judged by the port's own board", async () => {
+    await mcp.call("serial_stop");
+    // saved board: an ESP32 elsewhere (no reset delay); on the fake board's port arduino-cli sees an Uno
+    await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32", upload_port: "/dev/null", monitor_port: "/dev/null" });
+    fs.writeFileSync(path.join(sb.dir, "board-list.json"), JSON.stringify({
+      detected_ports: [{ port: { address: board.port, protocol: "serial", properties: { vid: "0x2341", pid: "0x0043" } },
+        matching_boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] }],
+    }));
+    const started = Date.now();
+    const r = await mcp.call("send_serial", { port: board.port, message: "hi", response_seconds: 0.3 });
+    assert.match(r.text, /ECHO:hi/);
+    assert.ok(Date.now() - started >= 2000, "no reset delay for the Uno on the given port");
+    await mcp.call("serial_start", { port: board.port }); // the next test expects a running session
+  });
+
   test("serial_stop", async () => {
     let r = await mcp.call("serial_stop", { port: board.port });
     assert.match(r.text, /Stopped/);

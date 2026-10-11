@@ -8,7 +8,7 @@ import {
 } from "../lib/config.js";
 import { autoDetect, detectPorts, pickPorts, type DetectedPort } from "../lib/ports.js";
 import { assertFqbn, assertSerialPort, parseBoardOptions, UserError } from "../lib/validate.js";
-import { DESTRUCTIVE, fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
+import { DESTRUCTIVE, fail, familyForPort, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 /** Settings board_config can remove (clear) and the option field behind each. */
 const CLEARABLE = ["upload_port", "monitor_port", "flash_size", "psram", "cdc_on_boot", "partition_scheme", "upload_speed",
@@ -399,10 +399,12 @@ export function registerBoardTools(server: McpServer): void {
     },
     async ({ port, free_port }) => {
       const board = getDefaultBoard(await loadConfig());
-      if (board && board.family !== "unknown" && !isEspFamily(board.family)) {
-        throw new UserError(`erase_flash only works on ESP32/ESP8266 boards; the saved board is "${board.family}".`);
-      }
       const resolved = await resolvePort("upload", port);
+      // judged by the board on that port, not by the saved board
+      const { family } = await familyForPort(resolved, board);
+      if (family !== "unknown" && !isEspFamily(family)) {
+        throw new UserError(`erase_flash only works on ESP32/ESP8266 boards; the board on ${resolved} is "${family}".`);
+      }
       const { result: r, notes } = await withExclusivePort(resolved, { alsoPause: [board?.monitorPort], freePort: free_port }, () =>
         esptool(["--port", resolved, "erase_flash"], 120_000)
       );

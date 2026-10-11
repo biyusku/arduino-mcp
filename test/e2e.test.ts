@@ -471,6 +471,25 @@ describe("arduino-mcp over stdio", () => {
     assert.equal(r.isError, false);
   });
 
+  test("erase_flash judges the board on the given port, not the saved board", { skip: !canRunFakeCli }, async () => {
+    const list = (fqbn: string) => fs.writeFileSync(path.join(sb.dir, "board-list.json"), JSON.stringify({
+      detected_ports: [{ port: { address: "/dev/zero", protocol: "serial", properties: { vid: "0x10c4", pid: "0xea60" } }, matching_boards: [{ name: "x", fqbn }] }],
+    }));
+    // saved board: an Uno elsewhere; on /dev/zero arduino-cli sees an ESP32
+    await mcp.call("board_config", { action: "set", fqbn: "arduino:avr:uno", upload_port: "/dev/null", monitor_port: "/dev/null" });
+    list("esp32:esp32:esp32");
+    let r = await mcp.call("erase_flash", { port: "/dev/zero", free_port: false });
+    assert.equal(r.isError, false, r.text);
+    assert.ok(cliCalls(sb).some((c) => c.join(" ") === "--port /dev/zero erase_flash"));
+
+    // and the reverse: saved board is an ESP32, the given port is an Uno
+    await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32" });
+    list("arduino:avr:uno");
+    r = await mcp.call("erase_flash", { port: "/dev/zero", free_port: false });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /the board on \/dev\/zero is "avr"/);
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

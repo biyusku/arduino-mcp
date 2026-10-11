@@ -490,6 +490,39 @@ describe("arduino-mcp over stdio", () => {
     assert.match(r.text, /the board on \/dev\/zero is "avr"/);
   });
 
+  test("with several boards, detect_board port=... saves that board under its own id", { skip: !canRunFakeCli }, async () => {
+    const own = makeSandbox();
+    const fresh = await connect(own);
+    try {
+      fs.writeFileSync(path.join(own.dir, "board-list.json"), JSON.stringify({
+        detected_ports: [
+          { port: { address: "/dev/ttyACM0", protocol: "serial", properties: { vid: "0x2341", pid: "0x0043", serialNumber: "UNO_A" } },
+            matching_boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] },
+          { port: { address: "/dev/ttyUSB0", protocol: "serial", properties: { vid: "0x10c4", pid: "0xea60", serialNumber: "ESP_B" } },
+            matching_boards: [{ name: "ESP32 Dev Module", fqbn: "esp32:esp32:esp32" }] },
+        ],
+      }));
+      let r = await fresh.call("detect_board");
+      assert.match(r.text, /run detect_board with its port/);
+      const first = r.text.match(/Serial no:\s+(\S+)/)?.[1];
+      const other = first === "UNO_A" ? "/dev/ttyUSB0" : "/dev/ttyACM0";
+
+      r = await fresh.call("detect_board", { port: other });
+      assert.match(r.text, new RegExp(`Port:\\s+${other.replace(/\//g, "\\/")} \\(upload \\+ monitor\\)`));
+      const saved = JSON.parse(fs.readFileSync(own.env.ARDUINO_MCP_CONFIG, "utf-8"));
+      assert.equal(saved.boards.UNO_A.uploadPort, "/dev/ttyACM0");
+      assert.equal(saved.boards.ESP_B.uploadPort, "/dev/ttyUSB0");
+      assert.equal(saved.boards.ESP_B.fqbn, "esp32:esp32:esp32");
+      assert.equal(saved.defaultBoard, first === "UNO_A" ? "ESP_B" : "UNO_A");
+
+      r = await fresh.call("detect_board", { port: "/dev/ttyUSB7" });
+      assert.equal(r.isError, true);
+      assert.match(r.text, /No connected board on \/dev\/ttyUSB7/);
+    } finally {
+      await fresh.close();
+    }
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

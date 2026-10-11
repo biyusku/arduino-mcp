@@ -226,8 +226,10 @@ export function groupBoards(ports: DetectedPort[]): BoardCandidate[] {
   return candidates.map((c, i) => ({ c, i })).sort((x, y) => rank(x.c) - rank(y.c) || x.i - y.i).map((x) => x.c);
 }
 
-export function pickPorts(ports: DetectedPort[]): AutoDetectResult | null {
-  const chosen = groupBoards(ports)[0];
+/** Picks the most likely board, or the board that has `port` when given. */
+export function pickPorts(ports: DetectedPort[], port?: string): AutoDetectResult | null {
+  const groups = groupBoards(ports);
+  const chosen = port ? groups.find((g) => g.upload.port === port || g.monitor.port === port) : groups[0];
   if (!chosen) return null;
   const { upload: up, monitor: mp } = chosen;
   const boards = up.boards.length ? up.boards : mp.boards;
@@ -244,8 +246,8 @@ export function pickPorts(ports: DetectedPort[]): AutoDetectResult | null {
   };
 }
 
-export async function autoDetect(): Promise<AutoDetectResult | null> {
-  return pickPorts(await detectPorts());
+export async function autoDetect(port?: string): Promise<AutoDetectResult | null> {
+  return pickPorts(await detectPorts(), port);
 }
 
 /**

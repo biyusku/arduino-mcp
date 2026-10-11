@@ -45,12 +45,19 @@ export function registerBoardTools(server: McpServer): void {
       description:
         "Detects the connected board (upload/monitor ports, FQBN) and saves it as the default board. " +
         "Works with AVR (Uno/Mega/Nano), ESP32/ESP32-S3/C3/S2, ESP8266, RP2040, SAMD and any board arduino-cli knows. " +
-        "Handles ESP32-S3 boards with two USB ports. Settings already saved for the same board are kept.",
-      inputSchema: { save: z.boolean().default(true).describe("Save as the default board") },
+        "Handles ESP32-S3 boards with two USB ports. Settings already saved for the same board are kept. " +
+        "With several boards connected, pass port to choose the board.",
+      inputSchema: {
+        save: z.boolean().default(true).describe("Save as the default board"),
+        port: z.string().optional().describe("With several boards connected: the port of the board to detect and save"),
+      },
       annotations: { ...WRITES, idempotentHint: true },
     },
-    async ({ save }) => {
-      const d = await autoDetect();
+    async ({ save, port }) => {
+      const d = await autoDetect(port ? assertSerialPort(port) : undefined);
+      if (!d && port) {
+        throw new UserError(`No connected board on ${port}. list_boards shows the connected boards and their ports.`);
+      }
       if (!d) {
         return fail(
           "❌ No board found.\n\nCheck:\n• Is the USB cable plugged in?\n• Does the cable carry data (not charge-only)?\n" +
@@ -142,7 +149,7 @@ export function registerBoardTools(server: McpServer): void {
         lines.push("(Two USB ports were combined as one dual-USB board. If they are two different boards, set the ports with board_config.)");
       }
       if (d.otherPorts.length) {
-        lines.push("", "⚠️ Other boards are connected; if the wrong one was picked, set the ports with board_config:");
+        lines.push("", "⚠️ Other boards are connected. To use one of them instead, run detect_board with its port:");
         lines.push(...d.otherPorts.map(describePort));
       }
       if (save) {

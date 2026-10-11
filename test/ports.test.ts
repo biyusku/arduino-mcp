@@ -156,3 +156,14 @@ test("serial device names, including WCH vendor driver names; never terminals", 
   }
 });
 
+test("pickPorts can be asked for the board on a given port", () => {
+  const nano = port({ port: "/dev/ttyUSB0", vendor: "1a86", product: "7523" });
+  const uno = port({ port: "/dev/ttyACM0", vendor: "2341", boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] });
+  assert.equal(pickPorts([uno, nano])!.uploadPort, "/dev/ttyACM0");
+  const chosen = pickPorts([uno, nano], "/dev/ttyUSB0")!;
+  assert.equal(chosen.uploadPort, "/dev/ttyUSB0");
+  assert.equal(chosen.fqbn, undefined);
+  assert.deepEqual(chosen.otherPorts.map((p) => p.port), ["/dev/ttyACM0"]);
+  assert.equal(pickPorts([uno, nano], "/dev/ttyUSB9"), null);
+});
+

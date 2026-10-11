@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { z } from "zod";
 import { displayPath, SKETCHES_DIR } from "../lib/env.js";
-import { sketchDir, UserError } from "../lib/validate.js";
+import { sketchDir, sketchFile, UserError } from "../lib/validate.js";
 import { renderTemplate, TEMPLATE_NAMES } from "../templates.js";
 import { DESTRUCTIVE, ok, READ_ONLY, WRITES } from "./util.js";
 
@@ -18,8 +18,8 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-function mainFile(name: string): string {
-  return path.join(sketchDir(name), `${name}.ino`);
+function mainFile(name: string): Promise<string> {
+  return sketchFile(name, `${name}.ino`);
 }
 
 export function registerSketchTools(server: McpServer): void {
@@ -67,7 +67,7 @@ export function registerSketchTools(server: McpServer): void {
       annotations: WRITES,
     },
     async ({ name, template, code, overwrite }) => {
-      const file = mainFile(name);
+      const file = await mainFile(name);
       if (!overwrite && (await exists(file))) {
         throw new UserError(`Sketch "${name}" already exists (${displayPath(file)}). Use write_sketch to change it, or overwrite=true.`);
       }
@@ -93,7 +93,7 @@ export function registerSketchTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ name }) => {
-      const file = mainFile(name);
+      const file = await mainFile(name);
       try {
         const code = await fs.readFile(file, "utf-8");
         return ok(`📄 ${displayPath(file)}:\n\`\`\`cpp\n${code}\n\`\`\``);
@@ -112,7 +112,7 @@ export function registerSketchTools(server: McpServer): void {
       annotations: WRITES,
     },
     async ({ name, code }) => {
-      const file = mainFile(name);
+      const file = await mainFile(name);
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, code, "utf-8");
       return ok(`✅ Sketch saved: ${displayPath(file)}`);

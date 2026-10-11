@@ -1,12 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as fs from "fs/promises";
-import * as path from "path";
 import { z } from "zod";
 import {
   componentsFromConnections, generateMarkdownTable, generateSvg, parseConnections, type CircuitDiagram,
 } from "../diagram.js";
 import { displayPath } from "../lib/env.js";
-import { sketchDir, UserError } from "../lib/validate.js";
+import { sketchDir, sketchFile, UserError } from "../lib/validate.js";
 import { ok, WRITES } from "./util.js";
 
 const formatArg = z.enum(["svg", "markdown", "both"]);
@@ -20,7 +19,7 @@ async function renderDiagram(diagram: CircuitDiagram, format: "svg" | "markdown"
   if (format === "svg" || format === "both") {
     const svg = generateSvg(diagram);
     if (dir) {
-      const file = path.join(dir, "wiring.svg");
+      const file = await sketchFile(saveTo!, "wiring.svg");
       await fs.writeFile(file, svg, "utf-8");
       out.push(`✅ SVG saved: ${displayPath(file)}`);
     } else {
@@ -30,7 +29,7 @@ async function renderDiagram(diagram: CircuitDiagram, format: "svg" | "markdown"
   if (format === "markdown" || format === "both") {
     const md = generateMarkdownTable(diagram);
     if (dir) {
-      const file = path.join(dir, "wiring.md");
+      const file = await sketchFile(saveTo!, "wiring.md");
       await fs.writeFile(file, md, "utf-8");
       out.push(`✅ Markdown saved: ${displayPath(file)}`);
     }

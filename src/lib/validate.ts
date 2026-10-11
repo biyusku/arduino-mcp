@@ -2,6 +2,7 @@
  * Input validation. Every name, path, port and FQBN coming from a tool call is
  * checked here before it touches the file system or a child process.
  */
+import * as fs from "fs/promises";
 import * as path from "path";
 import { SKETCHES_DIR } from "./env.js";
 
@@ -38,6 +39,51 @@ export function resolveInside(baseDir: string, relPath: string): string {
     throw new UserError(`File path "${relPath}" points outside the sketch folder.`);
   }
   return resolved;
+}
+
+function isInsideOrSame(dir: string, p: string): boolean {
+  const rel = path.relative(dir, p);
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
+}
+
+/**
+ * Like resolveInside, but also refuses paths that leave baseDir through a
+ * symbolic link (e.g. a downloaded sketch containing "src -> /home/user" or a
+ * dangling "x.h -> ~/.bashrc"). Links that stay inside baseDir are fine.
+ */
+export async function resolveInsideReal(baseDir: string, relPath: string): Promise<string> {
+  const target = resolveInside(baseDir, relPath);
+  const base = path.resolve(baseDir);
+  let realBase: string;
+  try {
+    realBase = await fs.realpath(base);
+  } catch {
+    return target; // the folder does not exist yet, so nothing in it can be a link
+  }
+  for (let p = target; p !== base; p = path.dirname(p)) {
+    let isLink: boolean;
+    try {
+      isLink = (await fs.lstat(p)).isSymbolicLink();
+    } catch {
+      continue; // does not exist (yet)
+    }
+    if (!isLink) continue;
+    let real: string;
+    try {
+      real = await fs.realpath(p);
+    } catch {
+      throw new UserError(`"${relPath}" goes through a broken symbolic link; refusing to follow it.`);
+    }
+    if (!isInsideOrSame(realBase, real)) {
+      throw new UserError(`"${relPath}" leads outside the sketch folder through a symbolic link.`);
+    }
+  }
+  return target;
+}
+
+/** A file inside a sketch folder, safe against traversal and symlink escapes. */
+export function sketchFile(sketch: string, relPath: string, baseDir = SKETCHES_DIR): Promise<string> {
+  return resolveInsideReal(sketchDir(sketch, baseDir), relPath);
 }
 
 const UNIX_PORT_RE = /^\/dev\/[A-Za-z0-9._\-/]+$/;

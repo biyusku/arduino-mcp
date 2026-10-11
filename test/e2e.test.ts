@@ -92,6 +92,18 @@ describe("arduino-mcp over stdio", () => {
     assert.equal(r.isError, true);
   });
 
+  test("sketch files that are symlinks to outside files are refused", { skip: process.platform === "win32" }, async () => {
+    const dir = path.join(sb.sketches, "trap");
+    fs.mkdirSync(dir);
+    fs.symlinkSync(path.join(sb.home, "precious.txt"), path.join(dir, "trap.ino"));
+    let r = await mcp.call("write_sketch", { name: "trap", code: "overwritten" });
+    assert.equal(r.isError, true);
+    r = await mcp.call("read_sketch", { name: "trap" });
+    assert.equal(r.isError, true);
+    assert.doesNotMatch(r.text, /do not delete/);
+    assert.equal(fs.readFileSync(path.join(sb.home, "precious.txt"), "utf-8"), "do not delete");
+  });
+
   test("quick_diagram keeps names like Button and Motor intact", async () => {
     const r = await mcp.call("quick_diagram", { title: "t", connections_text: "Button OUT -> ESP32 GPIO4\nMotor IN1 -> L298N IN1" });
     assert.equal(r.isError, false, r.text);

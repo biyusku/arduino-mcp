@@ -5,7 +5,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { parse, stringify } from "yaml";
-import { resolveInside, sketchDir, UserError } from "./lib/validate.js";
+import { sketchDir, sketchFile, UserError } from "./lib/validate.js";
 
 export interface ArduinoProject {
   name: string;
@@ -27,7 +27,7 @@ const optString = (v: unknown) => (v === undefined || v === null || v === "" ? u
 const optStringList = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
 
 export async function readProjectConfig(sketchName: string): Promise<ArduinoProject | null> {
-  const file = path.join(sketchDir(sketchName), CONFIG_FILENAME);
+  const file = await sketchFile(sketchName, CONFIG_FILENAME);
   let content: string;
   try {
     content = await fs.readFile(file, "utf-8");
@@ -64,9 +64,8 @@ export function projectToYaml(config: ArduinoProject): string {
 }
 
 export async function writeProjectConfig(sketchName: string, config: ArduinoProject): Promise<string> {
-  const dir = sketchDir(sketchName);
-  await fs.mkdir(dir, { recursive: true });
-  const file = path.join(dir, CONFIG_FILENAME);
+  const file = await sketchFile(sketchName, CONFIG_FILENAME);
+  await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, projectToYaml(config), "utf-8");
   return file;
 }
@@ -97,7 +96,7 @@ export async function listProjectFiles(sketchName: string): Promise<string[]> {
 }
 
 export async function readProjectFile(sketchName: string, filename: string): Promise<string | null> {
-  const file = resolveInside(sketchDir(sketchName), filename);
+  const file = await sketchFile(sketchName, filename);
   try {
     return await fs.readFile(file, "utf-8");
   } catch {
@@ -106,7 +105,7 @@ export async function readProjectFile(sketchName: string, filename: string): Pro
 }
 
 export async function writeProjectFile(sketchName: string, filename: string, content: string): Promise<string> {
-  const file = resolveInside(sketchDir(sketchName), filename);
+  const file = await sketchFile(sketchName, filename);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, content, "utf-8");
   return file;

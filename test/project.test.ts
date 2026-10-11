@@ -55,3 +55,22 @@ test("multi-file sketches: src/ subfolder is listed, traversal is refused", asyn
   await assert.rejects(project.writeProjectFile("..", "x.h", "x"), UserError);
   assert.equal(fs.existsSync(path.join(tmp, "escaped.txt")), false);
 });
+
+test("symbolic links cannot be used to leave the sketch folder", { skip: process.platform === "win32" }, async () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-outside-"));
+  fs.writeFileSync(path.join(outside, "secret.txt"), "top secret");
+  await project.writeProjectFile("linky", "linky.ino", "void setup(){}\nvoid loop(){}\n");
+  const dir = path.join(tmp, "sketches", "linky");
+  fs.symlinkSync(outside, path.join(dir, "src"));                                  // src -> outside folder
+  fs.symlinkSync(path.join(outside, "new.txt"), path.join(dir, "dangling.h"));     // dangling link
+  fs.symlinkSync(path.join(dir, "linky.ino"), path.join(dir, "alias.ino"));        // link that stays inside
+
+  await assert.rejects(project.readProjectFile("linky", "src/secret.txt"), /symbolic link/);
+  await assert.rejects(project.writeProjectFile("linky", "src/evil.txt", "x"), /symbolic link/);
+  await assert.rejects(project.writeProjectFile("linky", "src/deeper/evil.txt", "x"), /symbolic link/);
+  await assert.rejects(project.writeProjectFile("linky", "dangling.h", "x"), /broken symbolic link/);
+  assert.deepEqual(fs.readdirSync(outside), ["secret.txt"]);
+
+  assert.match((await project.readProjectFile("linky", "alias.ino"))!, /void setup/);
+});
+

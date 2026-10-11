@@ -52,13 +52,27 @@ export function registerBoardTools(server: McpServer): void {
       let fqbn = d.fqbn ? splitFqbn(d.fqbn).base : "";
       let boardName = d.boardName;
       let keptChoice = false;
+      let manualNote = "";
       if (save) {
-        ({ fqbn, boardName, keptChoice } = await updateConfig((cfg) => {
+        ({ fqbn, boardName, keptChoice, manualNote } = await updateConfig((cfg) => {
           const key = d.serial || `unknown_${Date.now()}`;
-          const prev = cfg.boards[key];
+          let prev: BoardConfig | undefined = cfg.boards[key];
           const candidates = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)]
             .filter((f): f is string => !!f)
             .map((f) => splitFqbn(f).base);
+          // A board set up by hand (board_config) before the first detection
+          // becomes this board's entry, if it fits what was detected.
+          const manual = cfg.boards.manual;
+          let manualNote = "";
+          if (!prev && manual?.fqbn && cfg.defaultBoard === "manual") {
+            if (candidates.length === 0 || candidates.includes(manual.fqbn)) {
+              prev = manual;
+              delete cfg.boards.manual;
+            } else {
+              manualNote = `Your manually configured board (${manual.fqbn}) does not match the detected board; ` +
+                'it is kept as "manual" and can be restored with board_config.';
+            }
+          }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
           const chosen = keepPrev ? prev!.fqbn : candidates[0] ?? "";
           // Keep the saved options (flash size, PSRAM, ...) unless the board type changed.
@@ -75,7 +89,7 @@ export function registerBoardTools(server: McpServer): void {
             lastSeen: new Date().toISOString(),
           };
           cfg.defaultBoard = key;
-          return { fqbn: chosen, boardName: name, keptChoice: keepPrev && candidates.length > 0 && candidates[0] !== chosen };
+          return { fqbn: chosen, boardName: name, keptChoice: keepPrev && candidates.length > 0 && candidates[0] !== chosen, manualNote };
         }));
       }
 
@@ -92,6 +106,7 @@ export function registerBoardTools(server: McpServer): void {
       if (keptChoice) {
         lines.push(`Keeping your board choice ${fqbn} (arduino-cli's first match is ${d.fqbn}).`);
       }
+      if (manualNote) lines.push(`⚠️ ${manualNote}`);
       const others = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)].filter((f) => f && splitFqbn(f).base !== fqbn);
       if (others.length) {
         lines.push(`Also matches: ${others.join(", ")} (change with board_config if needed)`);

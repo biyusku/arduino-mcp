@@ -307,6 +307,44 @@ describe("arduino-mcp over stdio", () => {
     assert.deepEqual(esptoolCalls(), [["--port", "/dev/null", "flash_id"]]);
   });
 
+  test("detect_board adopts a board configured by hand before the first detection", { skip: !canRunFakeCli }, async () => {
+    const own = makeSandbox(); // fresh config: no board detected yet
+    const fresh = await connect(own);
+    try {
+      let r = await fresh.call("board_config", { action: "set", fqbn: "esp32:esp32:lolin_s3", psram: "opi", flash_size: "16M" });
+      assert.match(r.text, /FQBN: esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
+      fs.writeFileSync(path.join(own.dir, "board-list.json"), JSON.stringify({
+        detected_ports: [{
+          port: { address: "/dev/ttyACM0", protocol: "serial", properties: { vid: "0x303a", pid: "0x1001", serialNumber: "S3NEW" } },
+          matching_boards: [{ name: "ESP32S3 Dev Module", fqbn: "esp32:esp32:esp32s3" }, { name: "LOLIN S3", fqbn: "esp32:esp32:lolin_s3" }],
+        }],
+      }));
+      r = await fresh.call("detect_board");
+      assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3\n/);
+      r = await fresh.call("board_config", { action: "show" });
+      assert.match(r.text, /ID:\s+S3NEW/);
+      assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
+      assert.match(r.text, /Upload port:\s+\/dev\/ttyACM0/);
+
+      // an unidentifiable clone takes over a manual Nano setup as well
+      const own2 = makeSandbox();
+      const fresh2 = await connect(own2);
+      try {
+        await fresh2.call("board_config", { action: "set", fqbn: "arduino:avr:nano:cpu=atmega328old" });
+        fs.writeFileSync(path.join(own2.dir, "board-list.json"), JSON.stringify({
+          detected_ports: [{ port: { address: "/dev/ttyUSB0", protocol: "serial", properties: { vid: "0x1a86", pid: "0x7523" } } }],
+        }));
+        await fresh2.call("detect_board");
+        r = await fresh2.call("board_config", { action: "show" });
+        assert.match(r.text, /FQBN:\s+arduino:avr:nano:cpu=atmega328old\n/);
+      } finally {
+        await fresh2.close();
+      }
+    } finally {
+      await fresh.close();
+    }
+  });
+
   test("arduino_cli_config reset needs confirmation", async () => {
     const r = await mcp.call("arduino_cli_config", { action: "reset" });
     assert.equal(r.isError, true);

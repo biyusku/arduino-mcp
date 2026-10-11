@@ -41,3 +41,27 @@ test("commandExists", () => {
   assert.equal(commandExists("definitely-not-a-real-command-xyz"), false);
   assert.equal(commandExists(process.platform === "win32" ? "cmd" : "sh"), true);
 });
+
+test("UTF-8 characters split across output chunks are decoded correctly", async () => {
+  const script = "process.stdout.write(Buffer.from([0xc3])); setTimeout(() => process.stdout.write(Buffer.from([0xa7, 0x0a])), 50)";
+  const r = await run(process.execPath, ["-e", script]);
+  assert.equal(r.stdout, "ç");
+});
+
+test("timeout kills grandchildren that ignore SIGTERM and hold the pipes", { skip: process.platform === "win32" }, async () => {
+  // child starts a grandchild that ignores SIGTERM, inherits stdout and prints its pid
+  const grandchild = "process.on('SIGTERM', () => {}); console.log(process.pid); setInterval(() => {}, 1000)";
+  const child = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit' }); setInterval(() => {}, 1000)`;
+  const started = Date.now();
+  const r = await run(process.execPath, ["-e", child], { timeoutMs: 500, killGraceMs: 300 });
+  assert.ok(Date.now() - started < 5000, "run() must return even though the pipes were held open");
+  assert.equal(r.ok, false);
+  assert.match(r.output, /Timed out/);
+  const pid = parseInt(r.stdout, 10);
+  assert.ok(pid > 0, r.stdout);
+  await new Promise((res) => setTimeout(res, 100));
+  // gone, or a zombie waiting to be reaped by init (state "Z")
+  const ps = await run("ps", ["-o", "stat=", "-p", String(pid)]);
+  assert.ok(!ps.stdout || ps.stdout.startsWith("Z"), `grandchild still running: ${ps.stdout}`);
+});
+

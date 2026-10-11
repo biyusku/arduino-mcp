@@ -137,3 +137,8 @@ export function commandExists(name: string): boolean {
 }
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Compares strings with embedded version numbers numerically ("2.3.9" < "2.3.10"). */
+export function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, "en", { numeric: true });
+}

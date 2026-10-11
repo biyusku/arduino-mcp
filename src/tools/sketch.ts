@@ -152,7 +152,10 @@ export function registerSketchTools(server: McpServer): void {
     async ({ old_name, new_name }) => {
       const oldDir = sketchDir(old_name);
       const newDir = sketchDir(new_name);
-      if (!(await exists(oldDir))) throw new UserError(`Sketch "${old_name}" not found.`);
+      // Only real sketches: renaming e.g. ~/Arduino/libraries would hide every installed library.
+      if (!(await exists(path.join(oldDir, `${old_name}.ino`)))) {
+        throw new UserError(`"${old_name}" is not a sketch (no ${old_name}.ino in ${displayPath(oldDir)}); nothing renamed.`);
+      }
       if (await exists(newDir)) throw new UserError(`A sketch named "${new_name}" already exists.`);
       await fs.rename(oldDir, newDir);
       const oldIno = path.join(newDir, `${old_name}.ino`);

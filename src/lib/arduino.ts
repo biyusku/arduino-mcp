@@ -8,7 +8,7 @@ import { CONFIG_FILENAME, readProjectConfig } from "../project.js";
 import { serialBuffer } from "../serial-buffer.js";
 import { buildFqbn, getDefaultBoard, getPlatformFamily, loadConfig, type BoardConfig } from "./config.js";
 import { ARDUINO_CLI } from "./env.js";
-import { run, sleep, type RunResult } from "./exec.js";
+import { naturalCompare, run, sleep, type RunResult } from "./exec.js";
 import { assertPortAccessible, releasePort } from "./ports.js";
 import { assertBuildFlags, assertFqbn, assertSerialPort, sketchDir, UserError } from "./validate.js";
 
@@ -225,7 +225,7 @@ function esptoolCandidates(): string[] {
   list.push("esptool", "esptool.py");
   const toolsDir = path.join(arduinoDataDir(), "packages", "esp32", "tools", "esptool_py");
   try {
-    const versions = fs.readdirSync(toolsDir).sort().reverse();
+    const versions = fs.readdirSync(toolsDir).sort(naturalCompare).reverse();
     for (const v of versions) {
       for (const bin of ["esptool", "esptool.exe", "esptool.py"]) {
         const p = path.join(toolsDir, v, bin);

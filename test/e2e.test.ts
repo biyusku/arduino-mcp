@@ -67,6 +67,15 @@ describe("arduino-mcp over stdio", () => {
     assert.equal(fs.existsSync(path.join(sb.sketches, "blinky2")), false);
   });
 
+  test("rename_sketch only renames real sketches", async () => {
+    const libs = path.join(sb.sketches, "libraries");
+    fs.mkdirSync(path.join(libs, "Servo"), { recursive: true });
+    const r = await mcp.call("rename_sketch", { old_name: "libraries", new_name: "old_libs" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /not a sketch/);
+    assert.ok(fs.existsSync(path.join(libs, "Servo")));
+  });
+
   test("path traversal is refused everywhere", async () => {
     for (const name of ["..", "", "../..", "a/../.."]) {
       const r = await mcp.call("delete_sketch", { name });

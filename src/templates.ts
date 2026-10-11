@@ -169,13 +169,18 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available()) {
-    int angle = Serial.parseInt();
-    if (angle >= 0 && angle <= 180) {
-      myServo.write(angle);
-      Serial.print("Angle: "); Serial.println(angle);
-    }
+  if (!Serial.available()) return;
+  // Read a whole line: parseInt() would turn the trailing newline into a 0.
+  String line = Serial.readStringUntil('\\n');
+  line.trim();
+  if (line.length() == 0) return;
+  int angle = line.toInt();
+  if ((angle == 0 && line != "0") || angle < 0 || angle > 180) {
+    Serial.println("Send a number from 0 to 180.");
+    return;
   }
+  myServo.write(angle);
+  Serial.print("Angle: "); Serial.println(angle);
 }
 `;
 

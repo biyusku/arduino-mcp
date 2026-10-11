@@ -5,7 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 import { cli } from "../lib/arduino.js";
-import { commandExists } from "../lib/exec.js";
+import { commandExists, naturalCompare } from "../lib/exec.js";
 import { assertHttpUrl, sketchDir, UserError } from "../lib/validate.js";
 import { DESTRUCTIVE, ok, READ_ONLY, reply, WRITES } from "./util.js";
 
@@ -14,9 +14,10 @@ interface IdeCommand {
   args: string[];
 }
 
-function newestMatch(dir: string, re: RegExp): string | null {
+/** The matching file with the highest version number (2.3.10 > 2.3.9). */
+export function newestMatch(dir: string, re: RegExp): string | null {
   try {
-    const hits = fs.readdirSync(dir).filter((f) => re.test(f)).sort();
+    const hits = fs.readdirSync(dir).filter((f) => re.test(f)).sort(naturalCompare);
     return hits.length ? path.join(dir, hits[hits.length - 1]) : null;
   } catch {
     return null;

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
-import { commandExists, run } from "../src/lib/exec.js";
+import { commandExists, naturalCompare, run } from "../src/lib/exec.js";
 
 test("arguments are passed literally, never through a shell", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-exec-"));
@@ -63,5 +63,13 @@ test("timeout kills grandchildren that ignore SIGTERM and hold the pipes", { ski
   // gone, or a zombie waiting to be reaped by init (state "Z")
   const ps = await run("ps", ["-o", "stat=", "-p", String(pid)]);
   assert.ok(!ps.stdout || ps.stdout.startsWith("Z"), `grandchild still running: ${ps.stdout}`);
+});
+
+test("naturalCompare orders version numbers numerically", () => {
+  assert.deepEqual(
+    ["arduino-ide_2.3.10_Linux_64bit.AppImage", "arduino-ide_2.3.9_Linux_64bit.AppImage", "arduino-ide_2.10.0_Linux_64bit.AppImage"].sort(naturalCompare),
+    ["arduino-ide_2.3.9_Linux_64bit.AppImage", "arduino-ide_2.3.10_Linux_64bit.AppImage", "arduino-ide_2.10.0_Linux_64bit.AppImage"]
+  );
+  assert.deepEqual(["4.9.1", "4.10.0", "5.0.2"].sort(naturalCompare).reverse(), ["5.0.2", "4.10.0", "4.9.1"]);
 });
 

@@ -137,6 +137,18 @@ describe("arduino-mcp over stdio", () => {
     r = await mcp.call("board_config", { action: "set", psram: "", upload_speed: "921600" });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,UploadSpeed=921600\n/);
 
+    // options given inside the FQBN behave like the dedicated parameters
+    r = await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3:PSRAM=opi,DebugLevel=info" });
+    assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,UploadSpeed=921600,DebugLevel=info\n/);
+    r = await mcp.call("board_config", { action: "set", psram: "" });
+    assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,UploadSpeed=921600,DebugLevel=info\n/);
+    r = await mcp.call("board_config", { action: "show" });
+    assert.match(r.text, /PSRAM:\s+board default/);
+
+    r = await mcp.call("board_config", { action: "set", fqbn: "arduino:avr:uno", psram: "opi" });
+    assert.match(r.text, /FQBN: arduino:avr:uno\n/);
+    assert.match(r.text, /psram has no effect on avr boards/);
+
     r = await mcp.call("board_config", { action: "set", upload_port: "/dev/tty; reboot" });
     assert.equal(r.isError, true);
 

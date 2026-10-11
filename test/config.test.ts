@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  buildFqbn, getPlatformFamily, loadConfig, mergeOptions, saveConfig, splitFqbn, updateConfig, type BoardConfig,
+  applyBoardOptions, buildFqbn, getPlatformFamily, loadConfig, mergeOptions, saveConfig, setBoardOption, splitFqbn, updateConfig,
+  type BoardConfig,
 } from "../src/lib/config.js";
 import { UserError } from "../src/lib/validate.js";
 
@@ -118,5 +119,38 @@ test("updateConfig saves nothing when the change throws", async () => {
   assert.deepEqual(await loadConfig(file), { boards: {} });
   await updateConfig((cfg) => { cfg.defaultBoard = "after-error"; }, file); // queue still works
   assert.equal((await loadConfig(file)).defaultBoard, "after-error");
+});
+
+test("menu options go to their own field; clearing a field clears the FQBN option", () => {
+  const b = board({ fqbn: "esp32:esp32:esp32s3", family: "esp32" });
+  applyBoardOptions(b, "PSRAM=opi,DebugLevel=info");
+  assert.equal(b.psram, "opi");
+  assert.equal(b.extraOptions, "DebugLevel=info");
+  setBoardOption(b, "psram", undefined);
+  assert.equal(buildFqbn(b), "esp32:esp32:esp32s3:DebugLevel=info");
+
+  const nano = board({ fqbn: "arduino:avr:nano", family: "avr" });
+  applyBoardOptions(nano, "cpu=atmega328old");
+  assert.equal(nano.extraOptions, "cpu=atmega328old");
+  assert.equal(buildFqbn(nano), "arduino:avr:nano:cpu=atmega328old");
+});
+
+test("v3 'cpu speed' (uploadSpeed on AVR) becomes cpu=...; v4.0.0 options in extraOptions move to fields", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-cfg-"));
+  const file = path.join(dir, "cfg.json");
+  fs.writeFileSync(file, JSON.stringify({
+    boards: {
+      nano: { fqbn: "arduino:avr:nano", family: "avr", uploadPort: "", monitorPort: "", uploadSpeed: "atmega328old", lastSeen: "" },
+      nano2: { fqbn: "arduino:avr:nano", family: "avr", uploadPort: "", monitorPort: "", uploadSpeed: "atmega328old", extraOptions: "cpu=atmega328", lastSeen: "" },
+      s3: { fqbn: "esp32:esp32:esp32s3", family: "esp32", uploadPort: "", monitorPort: "", psram: "disabled", extraOptions: "PSRAM=opi,DebugLevel=info", lastSeen: "" },
+    },
+  }));
+  const cfg = await loadConfig(file);
+  assert.equal(buildFqbn(cfg.boards.nano), "arduino:avr:nano:cpu=atmega328old");
+  assert.equal(cfg.boards.nano.uploadSpeed, undefined);
+  assert.equal(buildFqbn(cfg.boards.nano2), "arduino:avr:nano:cpu=atmega328"); // explicit option wins
+  assert.equal(cfg.boards.s3.psram, "opi"); // same effective FQBN as before
+  assert.equal(cfg.boards.s3.extraOptions, "DebugLevel=info");
+  assert.equal(buildFqbn(cfg.boards.s3), "esp32:esp32:esp32s3:PSRAM=opi,DebugLevel=info");
 });
 

@@ -2,7 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cli, esptool } from "../lib/arduino.js";
 import {
-  buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, mergeOptions, splitFqbn, updateConfig,
+  applyBoardOptions, buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, optionKey, setBoardOption,
+  splitFqbn, updateConfig, type OptionField,
   type BoardConfig,
 } from "../lib/config.js";
 import { assertPortAccessible, autoDetect, detectPorts, releasePort, type DetectedPort } from "../lib/ports.js";
@@ -161,21 +162,38 @@ export function registerBoardTools(server: McpServer): void {
           }
           b.fqbn = base;
           b.family = getPlatformFamily(base);
-          b.extraOptions = mergeOptions(b.extraOptions, options);
+          if (options) applyBoardOptions(b, options);
         }
         if (args.upload_port !== undefined) b.uploadPort = args.upload_port ? assertSerialPort(args.upload_port) : "";
         if (args.monitor_port !== undefined) b.monitorPort = args.monitor_port ? assertSerialPort(args.monitor_port) : "";
-        if (args.flash_size !== undefined) b.flashSize = optionValue("FlashSize", args.flash_size);
-        if (args.psram !== undefined) b.psram = optionValue("PSRAM", args.psram);
-        if (args.cdc_on_boot !== undefined) b.cdcOnBoot = optionValue("CDCOnBoot", args.cdc_on_boot);
-        if (args.partition_scheme !== undefined) b.partitionScheme = optionValue("PartitionScheme", args.partition_scheme);
-        if (args.upload_speed !== undefined) b.uploadSpeed = optionValue("UploadSpeed", args.upload_speed);
         if (args.extra_options !== undefined) {
           parseBoardOptions(args.extra_options);
-          b.extraOptions = args.extra_options.trim() || undefined;
+          b.extraOptions = undefined;
+          applyBoardOptions(b, args.extra_options);
+        }
+
+        const notes: string[] = [];
+        const fieldArgs: Array<[OptionField, string, string | undefined]> = [
+          ["flashSize", "flash_size", args.flash_size],
+          ["psram", "psram", args.psram],
+          ["cdcOnBoot", "cdc_on_boot", args.cdc_on_boot],
+          ["partitionScheme", "partition_scheme", args.partition_scheme],
+          ["uploadSpeed", "upload_speed", args.upload_speed],
+        ];
+        for (const [field, argName, value] of fieldArgs) {
+          if (value === undefined) continue;
+          setBoardOption(b, field, optionValue(argName, value));
+          if (value && !optionKey(b.family, field)) {
+            notes.push(`⚠️ ${argName} has no effect on ${b.family} boards; use extra_options for their menu options.`);
+          }
         }
         b.lastSeen = new Date().toISOString();
-        return ok(`✅ Settings saved.\nFQBN: ${buildFqbn(b) || "not set"}\nUpload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`);
+        return ok([
+          "✅ Settings saved.",
+          `FQBN: ${buildFqbn(b) || "not set"}`,
+          `Upload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`,
+          ...notes,
+        ].join("\n"));
       });
     }
   );

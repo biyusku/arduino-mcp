@@ -8,6 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { VERSION } from "./lib/env.js";
+import { stopAllChildren } from "./lib/exec.js";
 import { serialBuffer } from "./serial-buffer.js";
 import { registerBoardTools } from "./tools/board.js";
 import { registerBuildTools } from "./tools/build.js";
@@ -33,11 +34,17 @@ function createServer(): McpServer {
 
 let shuttingDown = false;
 
-/** Closes open serial ports so they are not left locked, then exits. */
+/**
+ * Closes open serial ports so they are not left locked, stops running
+ * arduino-cli/avrdude/esptool processes, then exits.
+ */
 async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  await Promise.race([serialBuffer.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
+  await Promise.race([
+    Promise.all([serialBuffer.stopAll(), stopAllChildren()]),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]);
   process.exit(code);
 }
 
@@ -51,6 +58,7 @@ async function main(): Promise<void> {
   process.stdin.on("close", () => void shutdown(0));
   process.on("SIGINT", () => void shutdown(0));
   process.on("SIGTERM", () => void shutdown(0));
+  process.on("SIGHUP", () => void shutdown(0));
   await server.connect(transport);
   console.error(`arduino-mcp v${VERSION} started`);
 }

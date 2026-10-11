@@ -3,7 +3,9 @@
  * Linux only (needs python3; CI and most dev machines have it).
  */
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { commandExists } from "../src/lib/exec.js";
@@ -138,6 +140,40 @@ describe("process lifecycle", { skip: !supported }, () => {
     board.proc.kill();
     if (code === "timeout") child.kill("SIGKILL");
     assert.equal(code, 0);
+  });
+});
+
+describe("shutdown", { skip: process.platform === "win32" }, () => {
+  test("closing stdin also stops a running arduino-cli process", { timeout: 30_000 }, async () => {
+    const sb = makeSandbox();
+    fs.mkdirSync(path.join(sb.sketches, "slow"));
+    fs.writeFileSync(path.join(sb.sketches, "slow", "slow.ino"), "void setup(){}\nvoid loop(){}\n");
+    const child = spawn(process.execPath, SERVER_ARGS, { cwd: ROOT, env: sb.env, stdio: ["pipe", "pipe", "pipe"] });
+    const send = (msg: object) => child.stdin.write(JSON.stringify(msg) + "\n");
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "compile_sketch", arguments: { name: "slow", fqbn: "arduino:avr:uno" } } });
+
+    const pidFile = sb.cliLog + ".slowpid";
+    for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await sleep(100);
+    const cliPid = parseInt(fs.readFileSync(pidFile, "utf-8"), 10);
+    try {
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.stdin.end();
+      await Promise.race([exited, sleep(10_000)]);
+      assert.notEqual(child.exitCode, null, "server did not exit");
+      let alive = true;
+      try {
+        process.kill(cliPid, 0);
+      } catch {
+        alive = false;
+      }
+      const ps = alive ? spawnSync("ps", ["-o", "stat=", "-p", String(cliPid)], { encoding: "utf8" }).stdout.trim() : "";
+      assert.ok(!alive || ps.startsWith("Z") || ps === "", `arduino-cli (pid ${cliPid}) still running: ${ps}`);
+    } finally {
+      try { process.kill(cliPid, "SIGKILL"); } catch { /* gone */ }
+      child.kill("SIGKILL");
+    }
   });
 });
 

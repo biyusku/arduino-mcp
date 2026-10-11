@@ -14,6 +14,12 @@ if (cmd === "version") {
   console.log(file && fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : JSON.stringify({ detected_ports: [] }));
 } else if (cmd === "compile") {
   const dir = args[args.length - 1];
+  if (dir.endsWith("slow")) {
+    // a long compile: report our pid, then hang
+    if (process.env.FAKE_CLI_LOG) fs.writeFileSync(process.env.FAKE_CLI_LOG + ".slowpid", String(process.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (dir.endsWith("broken")) {
     console.error(`${dir}/broken.ino:3:5: error: 'foo' was not declared in this scope`);
     process.exit(1);

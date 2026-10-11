@@ -106,6 +106,23 @@ class TreeKiller {
   }
 }
 
+/** Process trees started by run() that may still be running. */
+const liveTrees = new Set<TreeKiller>();
+
+/**
+ * Stops everything run() started that is still running (used on shutdown:
+ * children run in their own session, so a Ctrl+C or hangup of this server
+ * does not reach them).
+ */
+export async function stopAllChildren(graceMs = 1_000): Promise<void> {
+  const trees = [...liveTrees];
+  if (trees.length === 0) return;
+  trees.forEach((t) => t.signal("SIGTERM"));
+  await sleep(graceMs);
+  trees.forEach((t) => t.signal("SIGKILL"));
+  liveTrees.clear();
+}
+
 export function run(file: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const killGraceMs = opts.killGraceMs ?? 5_000;
@@ -130,6 +147,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
 
     const timeoutNote = () => `Timed out after ${Math.round(timeoutMs / 1000)}s`;
     const killer = new TreeKiller(child.pid);
+    liveTrees.add(killer);
 
     timers.push(setTimeout(() => {
       timedOut = true;
@@ -138,6 +156,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
       // returned because the child itself exited (leftovers may ignore SIGTERM).
       setTimeout(() => {
         killer.signal("SIGKILL");
+        liveTrees.delete(killer);
         finish(null, timeoutNote());
       }, killGraceMs).unref();
     }, timeoutMs));
@@ -155,6 +174,7 @@ export function run(file: string, args: string[], opts: RunOptions = {}): Promis
       if (settled) return;
       settled = true;
       timers.forEach(clearTimeout);
+      if (!timedOut) liveTrees.delete(killer); // after a timeout, the SIGKILL timer still needs it
       if (note) {
         stderr += (stderr ? "\n" : "") + note;
         output += (output ? "\n" : "") + note;

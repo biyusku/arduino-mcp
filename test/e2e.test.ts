@@ -353,9 +353,26 @@ describe("arduino-mcp over stdio", () => {
         assert.equal(saved.boards.UNO1.fqbn, "arduino:avr:uno"); // the Uno's entry is untouched
         assert.equal(saved.boards.UNO1.uploadPort, "/dev/ttyACM3");
 
+        // the matching board, plugged in later, gets the kept setup (options included)
+        r = await fresh3.call("board_config", { action: "use", id: "UNO1" });
+        assert.match(r.text, /Default board is now UNO1/);
+        fs.writeFileSync(path.join(own3.dir, "board-list.json"), JSON.stringify({
+          detected_ports: [{
+            port: { address: "/dev/ttyACM0", protocol: "serial", properties: { vid: "0x303a", pid: "0x1001", serialNumber: "S3LATE" } },
+            matching_boards: [{ name: "ESP32S3 Dev Module", fqbn: "esp32:esp32:esp32s3" }],
+          }],
+        }));
+        r = await fresh3.call("detect_board");
+        assert.doesNotMatch(r.text, /does not match/);
+        r = await fresh3.call("board_config", { action: "show" });
+        assert.match(r.text, /ID:\s+S3LATE/);
+        assert.match(r.text, /FQBN:\s+esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
+        assert.match(r.text, /Upload port:\s+\/dev\/ttyACM0/);
+        assert.doesNotMatch(r.text, /\bmanual\b/);
+
         r = await fresh3.call("board_config", { action: "use", id: "nope" });
         assert.equal(r.isError, true);
-        assert.match(r.text, /Saved: (manual, UNO1|UNO1, manual)/);
+        assert.match(r.text, /Saved: (S3LATE, UNO1|UNO1, S3LATE)/);
       } finally {
         await fresh3.close();
       }

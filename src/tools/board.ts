@@ -60,20 +60,25 @@ export function registerBoardTools(server: McpServer): void {
           const candidates = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)]
             .filter((f): f is string => !!f)
             .map((f) => splitFqbn(f).base);
-          // A board set up by hand (board_config) before the first detection
-          // becomes this board's entry, if it fits what was detected.
+          // A board set up by hand (board_config) becomes this board's entry if
+          // it fits what was detected: its FQBN is among the matches, or nothing
+          // matched and it is the current default. This also applies when the
+          // matching board is only plugged in after another board was detected.
           const manual = cfg.boards.manual;
+          const manualWasDefault = cfg.defaultBoard === "manual";
           let manualNote = "";
-          if (!prev && manual?.fqbn && cfg.defaultBoard === "manual") {
-            if (candidates.length === 0 || candidates.includes(manual.fqbn)) {
+          if (!prev && manual?.fqbn) {
+            const fits = candidates.length === 0 ? manualWasDefault : candidates.includes(manual.fqbn);
+            if (fits) {
               prev = manual;
               delete cfg.boards.manual;
-            } else {
-              // A different board: it becomes the default, the manual setup stays
-              // saved as it is (never mixed into the detected board's entry).
-              manualNote = `Your manually configured board (${buildFqbn(manual)}) does not match the detected board, so the ` +
-                "detected one is now the default. Your setup is kept; switch back with: board_config action=use id=manual";
             }
+          }
+          if (cfg.boards.manual && manualWasDefault) {
+            // A different board: it becomes the default, the manual setup stays
+            // saved as it is (never mixed into the detected board's entry).
+            manualNote = `Your manually configured board (${buildFqbn(cfg.boards.manual)}) does not match the detected board, ` +
+              "so the detected one is now the default. Your setup is kept; switch back with: board_config action=use id=manual";
           }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
           const chosen = keepPrev ? prev!.fqbn : candidates[0] ?? "";

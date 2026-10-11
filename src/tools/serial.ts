@@ -2,11 +2,40 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getDefaultBoard, loadConfig, resetsOnOpen } from "../lib/config.js";
 import { assertPortAccessible, detectPorts } from "../lib/ports.js";
+import { assertSerialPort, UserError } from "../lib/validate.js";
 import { serialBuffer } from "../serial-buffer.js";
 import { fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
 const portArg = z.string().optional().describe("Serial port (default: saved monitor port, then auto-detect)");
 const baudArg = z.number().int().positive().default(115200).describe("Baud rate");
+const optionalBaudArg = z.number().int().positive().optional()
+  .describe("Baud rate (default: the running background session's, else 115200)");
+
+/**
+ * A running background session fixes the baud rate; asking for another one
+ * is an error instead of silently reading at the session's rate.
+ */
+function effectiveBaud(port: string, requested: number | undefined): number {
+  const running = serialBuffer.sessionBaud(port);
+  if (running === undefined) return requested ?? 115200;
+  if (requested !== undefined && requested !== running) {
+    throw new UserError(
+      `A background session is running on ${port} at ${running} baud. ` +
+      `Stop it with serial_stop, or restart it with serial_start baud=${requested}.`
+    );
+  }
+  return running;
+}
+
+/** serial_read without a port: the only running session, or the saved monitor port's. */
+async function defaultSessionPort(): Promise<string> {
+  const sessions = serialBuffer.status();
+  if (sessions.length === 1) return sessions[0].port;
+  if (sessions.length === 0) throw new UserError("No background serial session is running. Start one with serial_start.");
+  const saved = getDefaultBoard(await loadConfig())?.monitorPort;
+  if (saved && sessions.some((s) => s.port === saved)) return saved;
+  throw new UserError(`Several background sessions are running (${sessions.map((s) => s.port).join(", ")}); pass port.`);
+}
 
 export function registerSerialTools(server: McpServer): void {
   server.registerTool(
@@ -18,17 +47,18 @@ export function registerSerialTools(server: McpServer): void {
         "returns the lines that arrive during that time instead of opening the port again.",
       inputSchema: {
         port: portArg,
-        baud: baudArg,
+        baud: optionalBaudArg,
         seconds: z.number().min(1).max(60).default(5).describe("How long to read (1-60 s)"),
       },
       annotations: READ_ONLY,
     },
     async ({ port, baud, seconds }) => {
       const resolved = await resolvePort("monitor", port);
+      const effective = effectiveBaud(resolved, baud);
       if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
-      const lines = await serialBuffer.readFor(resolved, baud, seconds * 1000);
+      const lines = await serialBuffer.readFor(resolved, effective, seconds * 1000);
       return ok(lines.length
-        ? `📡 ${resolved} @ ${baud} (${seconds}s):\n${lines.join("\n")}`
+        ? `📡 ${resolved} @ ${effective} (${seconds}s):\n${lines.join("\n")}`
         : `📡 ${resolved}: no data received in ${seconds}s.`);
     }
   );
@@ -44,7 +74,7 @@ export function registerSerialTools(server: McpServer): void {
       inputSchema: {
         message: z.string().describe("Text to send"),
         port: portArg,
-        baud: baudArg,
+        baud: optionalBaudArg,
         newline: z.boolean().default(true).describe("Append a newline (\\n)"),
         read_response: z.boolean().default(true).describe("Wait for and return the reply"),
         response_seconds: z.number().min(0).max(30).default(2).describe("How long to wait for a reply"),
@@ -55,13 +85,14 @@ export function registerSerialTools(server: McpServer): void {
     },
     async ({ message, port, baud, newline, read_response, response_seconds, wait_after_open_ms }) => {
       const resolved = await resolvePort("monitor", port);
+      const effective = effectiveBaud(resolved, baud);
       if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
       const board = getDefaultBoard(await loadConfig());
       const openDelay = wait_after_open_ms ?? (resetsOnOpen(board?.family) ? 2000 : 0);
       const data = newline ? `${message}\n` : message;
-      const reply = await serialBuffer.send(resolved, baud, data, read_response ? response_seconds * 1000 : 0, openDelay);
+      const answer = await serialBuffer.send(resolved, effective, data, read_response ? response_seconds * 1000 : 0, openDelay);
       if (!read_response) return ok(`📤 Sent: "${message}"`);
-      return ok(`📤 Sent: "${message}"\n📥 Reply:\n${reply.length ? reply.join("\n") : "(no reply)"}`);
+      return ok(`📤 Sent: "${message}"\n📥 Reply:\n${answer.length ? answer.join("\n") : "(no reply)"}`);
     }
   );
 
@@ -111,14 +142,14 @@ export function registerSerialTools(server: McpServer): void {
       title: "Read background serial buffer",
       description: "Returns the last N lines from a background serial session started with serial_start.",
       inputSchema: {
-        port: portArg,
+        port: z.string().optional().describe("Port of the session (default: the only running session, else the saved monitor port's)"),
         lines: z.number().int().min(1).max(500).default(50).describe("Number of lines (1-500)"),
         clear: z.boolean().default(false).describe("Clear the buffer after reading"),
       },
       annotations: READ_ONLY,
     },
     async ({ port, lines, clear }) => {
-      const resolved = await resolvePort("monitor", port);
+      const resolved = port ? assertSerialPort(port) : await defaultSessionPort();
       const result = serialBuffer.read(resolved, lines, clear);
       if (result === null) return fail(`❌ No background session on ${resolved}. Start one with serial_start.`);
       if (result.length === 0) return ok(`📡 ${resolved}: buffer is empty (no data yet).`);

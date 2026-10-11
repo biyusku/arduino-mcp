@@ -180,6 +180,11 @@ export class SerialManager {
     return this.sessions.has(port);
   }
 
+  /** Baud rate of the running session on this port, if any. */
+  sessionBaud(port: string): number | undefined {
+    return this.sessions.get(port)?.baud;
+  }
+
   read(port: string, lines: number, clear: boolean): string[] | null {
     const s = this.sessions.get(port);
     if (!s) return null;

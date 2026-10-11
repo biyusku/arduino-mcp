@@ -53,6 +53,18 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
 
     r = await mcp.call("serial_status");
     assert.match(r.text, new RegExp(`${board.port}\\s+@ 115200 baud`));
+
+    // a different baud than the running session's is an error, not silently ignored
+    r = await mcp.call("serial_monitor", { port: board.port, baud: 9600, seconds: 1 });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /running on .* at 115200 baud/);
+    r = await mcp.call("send_serial", { port: board.port, baud: 9600, message: "x" });
+    assert.equal(r.isError, true);
+
+    // serial_read without a port finds the only running session
+    r = await mcp.call("serial_read", { lines: 3 });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, new RegExp(`${board.port} — last`));
   });
 
   test("upload pauses and resumes the session and shows the real upload error", async () => {

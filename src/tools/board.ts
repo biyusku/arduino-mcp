@@ -60,25 +60,32 @@ export function registerBoardTools(server: McpServer): void {
           const candidates = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)]
             .filter((f): f is string => !!f)
             .map((f) => splitFqbn(f).base);
-          // A board set up by hand (board_config) becomes this board's entry if
-          // it fits what was detected: its FQBN is among the matches, or nothing
-          // matched and it is the current default. This also applies when the
-          // matching board is only plugged in after another board was detected.
+          // A board set up by hand with board_config ("manual" entry):
+          // - the detected board already has its own entry: that entry is used;
+          // - a new board while "manual" is the default: "manual" becomes this
+          //   board's entry if it fits (its FQBN is among the matches, or nothing
+          //   matched), otherwise the detected board takes over as default;
+          // - a new board while "manual" is not the default: never applied
+          //   silently (it may be a different variant of the same board type),
+          //   only suggested.
+          // "manual" is never mixed into another board's entry automatically.
           const manual = cfg.boards.manual;
           const manualWasDefault = cfg.defaultBoard === "manual";
+          const manualFqbn = manual ? buildFqbn(manual) : "";
+          const fits = !!manual?.fqbn && (candidates.length === 0 || candidates.includes(manual.fqbn));
           let manualNote = "";
-          if (!prev && manual?.fqbn) {
-            const fits = candidates.length === 0 ? manualWasDefault : candidates.includes(manual.fqbn);
-            if (fits) {
-              prev = manual;
-              delete cfg.boards.manual;
-            }
-          }
-          if (cfg.boards.manual && manualWasDefault) {
-            // A different board: it becomes the default, the manual setup stays
-            // saved as it is (never mixed into the detected board's entry).
-            manualNote = `Your manually configured board (${buildFqbn(cfg.boards.manual)}) does not match the detected board, ` +
-              "so the detected one is now the default. Your setup is kept; switch back with: board_config action=use id=manual";
+          if (manual?.fqbn && !prev && manualWasDefault && fits) {
+            prev = manual;
+            delete cfg.boards.manual;
+            manualNote = `✅ Applied your manual setup (${manualFqbn}) to this board.`;
+          } else if (manual?.fqbn && manualWasDefault) {
+            manualNote = "⚠️ " + (prev
+              ? `This board already has its own saved settings and is now the default board. `
+              : `Your manual setup (${manualFqbn}) does not match the detected board, so the detected one is now the default. `) +
+              "Your manual setup is kept; switch back with: board_config action=use id=manual";
+          } else if (manual?.fqbn && !prev && fits) {
+            manualNote = `💡 A saved manual setup (${manualFqbn}) is for this board type. ` +
+              `If this is that board, apply it with: board_config action=set fqbn=${manualFqbn}`;
           }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));
           const chosen = keepPrev ? prev!.fqbn : candidates[0] ?? "";
@@ -113,7 +120,7 @@ export function registerBoardTools(server: McpServer): void {
       if (keptChoice) {
         lines.push(`Keeping your board choice ${fqbn} (arduino-cli's first match is ${d.fqbn}).`);
       }
-      if (manualNote) lines.push(`⚠️ ${manualNote}`);
+      if (manualNote) lines.push(manualNote);
       const others = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)].filter((f) => f && splitFqbn(f).base !== fqbn);
       if (others.length) {
         lines.push(`Also matches: ${others.join(", ")} (change with board_config if needed)`);

@@ -324,6 +324,7 @@ describe("arduino-mcp over stdio", () => {
       }));
       r = await fresh.call("detect_board");
       assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3\n/);
+      assert.match(r.text, /Applied your manual setup \(esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\)/);
       r = await fresh.call("board_config", { action: "show" });
       assert.match(r.text, /ID:\s+S3NEW/);
       assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
@@ -353,9 +354,12 @@ describe("arduino-mcp over stdio", () => {
         assert.equal(saved.boards.UNO1.fqbn, "arduino:avr:uno"); // the Uno's entry is untouched
         assert.equal(saved.boards.UNO1.uploadPort, "/dev/ttyACM3");
 
-        // the matching board, plugged in later, gets the kept setup (options included)
-        r = await fresh3.call("board_config", { action: "use", id: "UNO1" });
-        assert.match(r.text, /Default board is now UNO1/);
+        // detecting a board that already has its own entry while "manual" is the default: honest note
+        r = await fresh3.call("detect_board");
+        assert.match(r.text, /This board already has its own saved settings/);
+        assert.doesNotMatch(r.text, /does not match/);
+
+        // another board of the same type, while "manual" is not the default: only suggested, never applied silently
         fs.writeFileSync(path.join(own3.dir, "board-list.json"), JSON.stringify({
           detected_ports: [{
             port: { address: "/dev/ttyACM0", protocol: "serial", properties: { vid: "0x303a", pid: "0x1001", serialNumber: "S3LATE" } },
@@ -363,16 +367,20 @@ describe("arduino-mcp over stdio", () => {
           }],
         }));
         r = await fresh3.call("detect_board");
-        assert.doesNotMatch(r.text, /does not match/);
+        assert.match(r.text, /FQBN:\s+esp32:esp32:esp32s3\n/);
+        const apply = r.text.match(/apply it with: board_config action=set fqbn=(\S+)/)?.[1];
+        assert.equal(apply, "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi");
         r = await fresh3.call("board_config", { action: "show" });
         assert.match(r.text, /ID:\s+S3LATE/);
-        assert.match(r.text, /FQBN:\s+esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
-        assert.match(r.text, /Upload port:\s+\/dev\/ttyACM0/);
-        assert.doesNotMatch(r.text, /\bmanual\b/);
+        assert.match(r.text, /FQBN:\s+esp32:esp32:esp32s3\n/);
+        assert.match(r.text, /Other saved:.*\bmanual\b|\n\s+manual\s/);
+
+        r = await fresh3.call("board_config", { action: "set", fqbn: apply });
+        assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\nUpload: \/dev\/ttyACM0/);
 
         r = await fresh3.call("board_config", { action: "use", id: "nope" });
         assert.equal(r.isError, true);
-        assert.match(r.text, /Saved: (S3LATE, UNO1|UNO1, S3LATE)/);
+        assert.match(r.text, /Saved: .*S3LATE/);
       } finally {
         await fresh3.close();
       }

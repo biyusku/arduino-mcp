@@ -124,10 +124,25 @@ describe("releasePort", { skip: !supported || !commandExists("lsof") }, () => {
     const { releasePort } = await import("../src/lib/ports.js");
     const holder = await startFakeBoard(); // this python process keeps its pty open
     const exited = new Promise((resolve) => holder.proc.once("exit", resolve));
-    const stopped = await releasePort(holder.port);
+    // a pty is not a serial device, so treat it as one for this test only
+    const stopped = await releasePort(holder.port, async () => true);
     assert.equal(stopped.length, 1, JSON.stringify(stopped));
     assert.match(stopped[0], new RegExp(`pid ${holder.proc.pid}`));
     await exited;
     await assert.rejects(releasePort("/home/me/.bashrc"), /Invalid serial port/);
+  });
+
+  test("never touches holders of terminals or other devices", async () => {
+    const { releasePort, isReleasableSerialPort } = await import("../src/lib/ports.js");
+    const holder = await startFakeBoard();
+    try {
+      for (const dev of ["/dev/null", "/dev/tty", "/dev/zero", holder.port]) {
+        assert.equal(await isReleasableSerialPort(dev), false, dev);
+        assert.deepEqual(await releasePort(dev), [], dev);
+      }
+      assert.equal(holder.proc.exitCode, null); // still alive
+    } finally {
+      holder.proc.kill();
+    }
   });
 });

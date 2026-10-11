@@ -220,19 +220,40 @@ export async function assertPortAccessible(port: string): Promise<void> {
   if (problem) throw new UserError(problem);
 }
 
+// Real serial devices. Terminals (/dev/tty, /dev/pts/N, /dev/ttys00N) and
+// other devices such as /dev/null are open in nearly every process, so they
+// must never be "released".
+const SERIAL_DEVICE_RE = /^\/dev\/(?:tty(?:USB|ACM|AMA|S|XRUSB|WCH|MFD|SAC|THS|O)\d+|rfcomm\d+|(?:cu|tty)\.[^/]+)$/;
+
+/** True if `port` (after resolving symlinks such as /dev/serial/by-id/...) is a serial character device. */
+export async function isReleasableSerialPort(port: string): Promise<boolean> {
+  try {
+    const real = await fs.realpath(port);
+    if (!SERIAL_DEVICE_RE.test(real)) return false;
+    return (await fs.stat(real)).isCharacterDevice();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Terminates other processes that hold the port open (e.g. a forgotten
- * serial monitor), so an upload can use it. Our own process is never touched;
- * our own serial sessions are paused separately. Returns what was stopped.
+ * Terminates other processes that hold a serial port open (e.g. a forgotten
+ * serial monitor), so an upload can use it. Only real serial devices are
+ * handled, and neither this server nor its parent (the MCP client) is ever
+ * touched; our own serial sessions are paused separately. Returns what was stopped.
  */
-export async function releasePort(port: string): Promise<string[]> {
+export async function releasePort(
+  port: string,
+  isReleasable: (port: string) => Promise<boolean> = isReleasableSerialPort
+): Promise<string[]> {
   assertSerialPort(port);
-  if (process.platform === "win32") return [];
-  const r = await run("lsof", ["-t", "--", port], { timeoutMs: 10_000 });
+  if (process.platform === "win32" || !(await isReleasable(port))) return [];
+  const device = await fs.realpath(port);
+  const r = await run("lsof", ["-t", "--", device], { timeoutMs: 10_000 });
   const pids = r.stdout
     .split(/\s+/)
     .map((s) => parseInt(s, 10))
-    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid && pid !== process.ppid);
 
   const stopped: string[] = [];
   for (const pid of [...new Set(pids)]) {

@@ -105,8 +105,8 @@ export async function resolveTarget(
   }
   assertFqbn(fqbn);
 
+  // validated in upload(): compiling must not depend on the port
   const uploadPort = overrides.port || project?.upload_port || board?.uploadPort || undefined;
-  if (uploadPort) assertSerialPort(uploadPort);
 
   return {
     dir,
@@ -147,6 +147,7 @@ export async function upload(t: Target, freePort: boolean): Promise<{ ok: boolea
   if (!port) {
     throw new UserError('No upload port known. Run "detect_board", set one with "board_config", or pass port.');
   }
+  assertSerialPort(port);
   const notes: string[] = [];
   const resume = await serialBuffer.pause([port, ...(t.monitorPort ? [t.monitorPort] : [])]);
   let r: RunResult;

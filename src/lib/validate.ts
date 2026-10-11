@@ -86,7 +86,8 @@ export function sketchFile(sketch: string, relPath: string, baseDir = SKETCHES_D
   return resolveInsideReal(sketchDir(sketch, baseDir), relPath);
 }
 
-const UNIX_PORT_RE = /^\/dev\/[A-Za-z0-9._\-/]+$/;
+// ":" appears in stable names such as /dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0
+const UNIX_PORT_RE = /^\/dev\/[A-Za-z0-9._\-/:]+$/;
 const WIN_PORT_RE = /^(?:\\\\\.\\)?COM\d+$/i;
 
 export function assertSerialPort(port: string): string {

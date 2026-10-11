@@ -186,6 +186,12 @@ describe("arduino-mcp over stdio", () => {
     r = await mcp.call("compile_sketch", { name: "proj", fqbn: "arduino:avr:uno" });
     assert.match(r.text, /arduino:avr:uno/);
 
+    // compiling never depends on the (here: unusual but valid) upload port
+    r = await mcp.call("board_config", { action: "set", upload_port: "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0" });
+    assert.equal(r.isError, false, r.text);
+    r = await mcp.call("compile_sketch", { name: "proj" });
+    assert.match(r.text, /Compile succeeded/);
+
     await mcp.call("create_sketch", { name: "broken", template: "empty" });
     r = await mcp.call("compile_sketch", { name: "broken", fqbn: "arduino:avr:uno" });
     assert.match(r.text, /Compile failed/);

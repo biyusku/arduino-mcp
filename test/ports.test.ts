@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergePorts, parseBoardListJson, pickPorts, roleForVendor } from "../src/lib/ports.js";
+import { mergePorts, parseBoardListJson, pickPorts, roleForVendor, type DetectedPort } from "../src/lib/ports.js";
 
 const CLI_JSON = JSON.stringify({
   detected_ports: [
@@ -81,3 +81,40 @@ test("single CH340 clone uses the same port for both", () => {
 test("no ports → null", () => {
   assert.equal(pickPorts([]), null);
 });
+
+const port = (p: Partial<DetectedPort> & { port: string; vendor: string }): DetectedPort => ({
+  product: "0000", serial: "", description: "", role: roleForVendor(p.vendor), boards: [], ...p,
+});
+
+test("two different boards are never mixed: CH340 Nano clone + genuine Uno", () => {
+  const nano = port({ port: "/dev/ttyUSB0", vendor: "1a86", product: "7523" });
+  const uno = port({ port: "/dev/ttyACM0", vendor: "2341", product: "0043", serial: "8573", boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] });
+  const pick = pickPorts([uno, nano])!;
+  assert.equal(pick.uploadPort, "/dev/ttyACM0");
+  assert.equal(pick.monitorPort, "/dev/ttyACM0");
+  assert.equal(pick.fqbn, "arduino:avr:uno");
+  assert.equal(pick.serial, "8573");
+  assert.equal(pick.paired, false);
+  assert.deepEqual(pick.otherPorts.map((p) => p.port), ["/dev/ttyUSB0"]);
+});
+
+test("dual-USB ESP32-S3 next to an Uno: the pair wins, the Uno is reported", () => {
+  const ch343 = port({ port: "/dev/ttyACM1", vendor: "1a86", product: "55d3" });
+  const native = port({ port: "/dev/ttyACM0", vendor: "303a", product: "1001", boards: [{ name: "ESP32S3 Dev Module", fqbn: "esp32:esp32:esp32s3" }] });
+  const uno = port({ port: "/dev/ttyACM2", vendor: "2341", boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }] });
+  const pick = pickPorts([native, ch343, uno])!;
+  assert.equal(pick.uploadPort, "/dev/ttyACM1");
+  assert.equal(pick.monitorPort, "/dev/ttyACM0");
+  assert.equal(pick.paired, true);
+  assert.equal(pick.fqbn, "esp32:esp32:esp32s3");
+  assert.deepEqual(pick.otherPorts.map((p) => p.port), ["/dev/ttyACM2"]);
+});
+
+test("two CH340 clones: each is its own board, not an upload/monitor pair", () => {
+  const a = port({ port: "/dev/ttyUSB0", vendor: "1a86" });
+  const b = port({ port: "/dev/ttyUSB1", vendor: "1a86" });
+  const pick = pickPorts([a, b])!;
+  assert.equal(pick.uploadPort, pick.monitorPort);
+  assert.equal(pick.otherPorts.length, 1);
+});
+

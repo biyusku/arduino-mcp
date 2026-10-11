@@ -168,14 +168,45 @@ export interface AutoDetectResult {
   boardName?: string;
   /** Other boards arduino-cli considers possible for the same VID/PID */
   alternatives: MatchingBoard[];
-  /** All USB serial ports seen, so ambiguous setups can be explained */
+  /** True when two USB devices were combined as one dual-USB board (e.g. ESP32-S3: CH343 + native USB) */
+  paired: boolean;
+  /** USB serial ports that belong to other boards */
+  otherPorts: DetectedPort[];
+  /** All USB serial ports seen */
   ports: DetectedPort[];
 }
 
+interface BoardCandidate {
+  upload: DetectedPort;
+  monitor: DetectedPort;
+  paired: boolean;
+}
+
+/**
+ * Groups ports into boards. Each port is its own board, except that exactly
+ * one upload-only bridge (CH34x) plus exactly one monitor-only native USB port
+ * (Espressif) are treated as the two ports of one dual-USB board. Ports of
+ * different boards are never mixed.
+ */
+export function groupBoards(ports: DetectedPort[]): BoardCandidate[] {
+  const uploads = ports.filter((p) => p.role === "upload");
+  const monitors = ports.filter((p) => p.role === "monitor");
+  const candidates: BoardCandidate[] = [];
+  if (uploads.length === 1 && monitors.length === 1) {
+    candidates.push({ upload: uploads[0], monitor: monitors[0], paired: true });
+  } else {
+    for (const p of [...uploads, ...monitors]) candidates.push({ upload: p, monitor: p, paired: false });
+  }
+  for (const p of ports.filter((p) => p.role === "both")) candidates.push({ upload: p, monitor: p, paired: false });
+  // dual-USB pairs first, then boards arduino-cli could identify
+  const rank = (c: BoardCandidate) => (c.paired ? 0 : c.upload.boards.length || c.monitor.boards.length ? 1 : 2);
+  return candidates.map((c, i) => ({ c, i })).sort((x, y) => rank(x.c) - rank(y.c) || x.i - y.i).map((x) => x.c);
+}
+
 export function pickPorts(ports: DetectedPort[]): AutoDetectResult | null {
-  if (ports.length === 0) return null;
-  const up = ports.find((p) => p.role === "upload") || ports.find((p) => p.role === "both") || ports[0];
-  const mp = ports.find((p) => p.role === "monitor") || ports.find((p) => p.role === "both") || up;
+  const chosen = groupBoards(ports)[0];
+  if (!chosen) return null;
+  const { upload: up, monitor: mp } = chosen;
   const boards = up.boards.length ? up.boards : mp.boards;
   return {
     uploadPort: up.port,
@@ -184,6 +215,8 @@ export function pickPorts(ports: DetectedPort[]): AutoDetectResult | null {
     fqbn: boards[0]?.fqbn,
     boardName: boards[0]?.name,
     alternatives: boards.slice(1),
+    paired: chosen.paired,
+    otherPorts: ports.filter((p) => p !== up && p !== mp),
     ports,
   };
 }

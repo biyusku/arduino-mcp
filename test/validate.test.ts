@@ -38,7 +38,7 @@ test("resolveInside rejects escapes", () => {
 });
 
 test("serial ports", () => {
-  for (const p of ["/dev/ttyACM0", "/dev/ttyUSB1", "/dev/cu.usbmodem1101", "/dev/serial/by-id/usb-1a86_USB_Single-if00", "/dev/pts/3", "COM3", "\\\\.\\COM12"]) {
+  for (const p of ["/dev/ttyACM0", "/dev/ttyUSB1", "/dev/cu.usbmodem1101", "/dev/serial/by-id/usb-1a86_USB_Single-if00", "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0", "/dev/pts/3", "COM3", "\\\\.\\COM12"]) {
     assert.equal(assertSerialPort(p), p);
   }
   for (const p of ["", "ttyACM0", "/dev/../home/me/.bashrc", "/dev/tty; rm -rf ~", "/home/me/file", "-p", "$(id)"]) {

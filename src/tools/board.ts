@@ -61,10 +61,12 @@ export function registerBoardTools(server: McpServer): void {
       if (d.alternatives.length) {
         lines.push(`Also matches: ${d.alternatives.map((b) => b.fqbn).join(", ")} (change with board_config if needed)`);
       }
-      const others = d.ports.filter((p) => p.port !== d.uploadPort && p.port !== d.monitorPort);
-      if (others.length) {
-        lines.push("", "⚠️ Other USB serial ports are connected; if the wrong one was picked, set it with board_config:");
-        lines.push(...others.map(describePort));
+      if (d.paired) {
+        lines.push("(Two USB ports were combined as one dual-USB board. If they are two different boards, set the ports with board_config.)");
+      }
+      if (d.otherPorts.length) {
+        lines.push("", "⚠️ Other boards are connected; if the wrong one was picked, set the ports with board_config:");
+        lines.push(...d.otherPorts.map(describePort));
       }
 
       if (save) {

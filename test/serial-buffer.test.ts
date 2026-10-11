@@ -99,10 +99,57 @@ test("late close event of an old session does not kill the new one", async () =>
   assert.equal(mgr.status()[0].baud, 115200);
 });
 
-test("unplugged device removes its session", async () => {
-  const { mgr, ports } = setup();
-  await mgr.start("/dev/ttyACM0", 9600);
+test("a device that goes away keeps its session and output, and the session reconnects", async () => {
+  const ports: FakePort[] = [];
+  let failOpens = 0;
+  const mgr = new SerialManager((p, b) => {
+    const port = new FakePort(p, b, failOpens-- > 0);
+    ports.push(port);
+    return port;
+  }, 10);
+  await mgr.start("/dev/ttyACM0", 115200);
+  ports[0].feed("Guru Meditation Error: Core 1 panic'ed\n");
+
+  failOpens = 2; // the board needs a moment to come back after its reset
+  ports[0].isOpen = false;
   ports[0].emit("close");
+  assert.equal(mgr.isRunning("/dev/ttyACM0"), true);
+  assert.equal(mgr.isConnected("/dev/ttyACM0"), false);
+  assert.deepEqual(mgr.read("/dev/ttyACM0", 10, false), [
+    "Guru Meditation Error: Core 1 panic'ed",
+    "--- [arduino-mcp] /dev/ttyACM0 disconnected, reconnecting ---",
+  ]);
+  await assert.rejects(mgr.send("/dev/ttyACM0", 115200, "x\n", 0, 0), /disconnected/);
+
+  await wait(100);
+  assert.equal(mgr.isConnected("/dev/ttyACM0"), true);
+  assert.equal(ports.length, 4); // first open, two failed reopens, one successful
+  ports[3].feed("rst:0xc (RTC_SW_CPU_RST)\n");
+  assert.deepEqual(mgr.read("/dev/ttyACM0", 2, false), [
+    "--- [arduino-mcp] /dev/ttyACM0 reconnected ---",
+    "rst:0xc (RTC_SW_CPU_RST)",
+  ]);
+  ports[0].feed("late data from the old handle\n"); // ignored
+  assert.equal(mgr.read("/dev/ttyACM0", 1, false)![0], "rst:0xc (RTC_SW_CPU_RST)");
+  await mgr.stop("/dev/ttyACM0");
+});
+
+test("stopping a disconnected session stops the reconnect attempts", async () => {
+  const ports: FakePort[] = [];
+  const mgr = new SerialManager((p, b) => {
+    const port = new FakePort(p, b, ports.length > 0); // the device never comes back
+    ports.push(port);
+    return port;
+  }, 10);
+  await mgr.start("/dev/ttyACM0", 9600);
+  ports[0].isOpen = false;
+  ports[0].emit("close");
+  await wait(35);
+  assert.ok(ports.length > 1);
+  assert.equal(await mgr.stop("/dev/ttyACM0"), true);
+  const attempts = ports.length;
+  await wait(50);
+  assert.equal(ports.length, attempts);
   assert.equal(mgr.isRunning("/dev/ttyACM0"), false);
 });
 

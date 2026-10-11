@@ -77,6 +77,12 @@ export class LineBuffer {
     this.lines = [];
   }
 
+  /** Adds a line of our own (e.g. a disconnect marker), after any unterminated text. */
+  note(text: string): void {
+    this.flush();
+    this.add(text);
+  }
+
   private add(raw: string): void {
     const line = cleanLine(raw);
     if (!line.trim()) return;
@@ -89,7 +95,10 @@ export class LineBuffer {
 interface Session {
   port: string;
   baud: number;
-  handle: PortHandle;
+  handle: PortHandle | null;
+  /** false while the device is gone (e.g. a native-USB board resetting) */
+  connected: boolean;
+  retry?: NodeJS.Timeout;
   buffer: LineBuffer;
   startedAt: Date;
   bytes: number;
@@ -98,6 +107,7 @@ interface Session {
 export interface SessionStatus {
   port: string;
   baud: number;
+  connected: boolean;
   lineCount: number;
   byteCount: number;
   uptime: string;
@@ -126,7 +136,11 @@ function writeHandle(h: PortHandle, data: string): Promise<void> {
 export class SerialManager {
   private sessions = new Map<string, Session>();
 
-  constructor(private readonly factory: PortFactory = defaultFactory) {}
+  constructor(
+    private readonly factory: PortFactory = defaultFactory,
+    /** How often to try to reopen a port whose device went away */
+    private readonly reconnectMs = 1_000
+  ) {}
 
   private open(port: string, baud: number): Promise<PortHandle> {
     const h = this.factory(port, baud);
@@ -151,24 +165,58 @@ export class SerialManager {
       return `Already running on ${port}`;
     }
 
-    const session: Session = { port, baud, handle, buffer: new LineBuffer(), startedAt: new Date(), bytes: 0 };
+    const session: Session = { port, baud, handle: null, connected: false, buffer: new LineBuffer(), startedAt: new Date(), bytes: 0 };
+    this.attach(session, handle);
+    this.sessions.set(port, session);
+    return `Started on ${port} @ ${baud} baud`;
+  }
+
+  private attach(session: Session, handle: PortHandle): void {
+    session.handle = handle;
+    session.connected = true;
+    const current = () => this.sessions.get(session.port) === session && session.handle === handle;
     handle.on("data", (d: Buffer) => {
+      if (!current()) return;
       session.bytes += d.length;
       session.buffer.push(d);
     });
     handle.on("close", () => {
-      // Only remove *this* session: a newer one may already use the same port.
-      if (this.sessions.get(port) === session) this.sessions.delete(port);
+      // Ignore closes of stopped/replaced sessions. Otherwise the device went
+      // away (native-USB boards re-enumerate on every reset, crash or
+      // watchdog restart): keep the session and its output (often exactly
+      // the crash message) and reconnect when the device is back.
+      if (!current()) return;
+      session.handle = null;
+      session.connected = false;
+      session.buffer.note(`--- [arduino-mcp] ${session.port} disconnected, reconnecting ---`);
+      this.scheduleReconnect(session);
     });
-    this.sessions.set(port, session);
-    return `Started on ${port} @ ${baud} baud`;
+  }
+
+  private scheduleReconnect(session: Session): void {
+    session.retry = setTimeout(async () => {
+      if (this.sessions.get(session.port) !== session) return;
+      try {
+        const handle = await this.open(session.port, session.baud);
+        if (this.sessions.get(session.port) !== session) {
+          await closeHandle(handle); // stopped while we were reopening
+          return;
+        }
+        this.attach(session, handle);
+        session.buffer.note(`--- [arduino-mcp] ${session.port} reconnected ---`);
+      } catch {
+        this.scheduleReconnect(session);
+      }
+    }, this.reconnectMs);
+    session.retry.unref();
   }
 
   async stop(port: string): Promise<boolean> {
     const s = this.sessions.get(port);
     if (!s) return false;
     this.sessions.delete(port);
-    await closeHandle(s.handle);
+    clearTimeout(s.retry);
+    if (s.handle) await closeHandle(s.handle);
     return true;
   }
 
@@ -178,6 +226,11 @@ export class SerialManager {
 
   isRunning(port: string): boolean {
     return this.sessions.has(port);
+  }
+
+  /** False while a running session waits for its device to come back. */
+  isConnected(port: string): boolean {
+    return this.sessions.get(port)?.connected ?? false;
   }
 
   /** Baud rate of the running session on this port, if any. */
@@ -199,6 +252,7 @@ export class SerialManager {
       return {
         port: s.port,
         baud: s.baud,
+        connected: s.connected,
         lineCount: s.buffer.lines.length,
         byteCount: s.bytes,
         uptime: sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`,
@@ -232,6 +286,7 @@ export class SerialManager {
   async send(port: string, baud: number, data: string, responseMs: number, openDelayMs: number): Promise<string[]> {
     const s = this.sessions.get(port);
     if (s) {
+      if (!s.handle) throw new UserError(`${port} is disconnected (the background session is reconnecting); try again in a moment.`);
       const mark = s.buffer.total;
       await writeHandle(s.handle, data);
       await sleep(responseMs);

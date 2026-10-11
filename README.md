@@ -13,7 +13,8 @@ Claude Code (or any MCP client) can write, compile, upload, monitor and diagram 
 - 🔍 **Auto board detection** — finds upload and monitor ports automatically (handles ESP32-S3 dual-USB)
 - 💾 **Board memory** — remembers FQBN, ports, flash, PSRAM after the first `detect_board`
 - 📤 **One-command deploy** — `compile_and_upload` does everything in one shot
-- 📡 **Persistent serial sessions** — `serial_start` keeps the port open and buffers output; uploads pause and resume it automatically
+- 📡 **Persistent serial sessions** — `serial_start` keeps the port open and buffers output; uploads pause and resume it, and it survives
+  board resets (native-USB boards re-enumerate) without losing the output
 - 📬 **Serial send** — send commands to the board (no unwanted reset on Uno/Nano)
 - 🌐 **OTA / WiFi upload** — upload over the air without USB
 - 📦 **Project system** — `arduino-mcp.yaml` per sketch: board, ports, baud, libraries and build flags

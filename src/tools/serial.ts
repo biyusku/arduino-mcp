@@ -163,7 +163,8 @@ export function registerSerialTools(server: McpServer): void {
       title: "Start background serial session",
       description:
         "Keeps the serial port open in the background and buffers its output (last 500 lines). Read it any time with " +
-        "serial_read; send_serial and serial_monitor reuse the session. Uploads pause and resume it automatically.",
+        "serial_read; send_serial and serial_monitor reuse the session. Uploads pause and resume it automatically, and it " +
+        "survives board resets/disconnects (output is kept, the port is reopened when the board is back).",
       inputSchema: {
         port: portArg,
         baud: z.number().int().positive().optional().describe("Baud rate (default: the sketch's baud, else 115200)"),
@@ -194,8 +195,9 @@ export function registerSerialTools(server: McpServer): void {
       const resolved = port ? assertSerialPort(port) : await defaultSessionPort();
       const result = serialBuffer.read(resolved, lines, clear);
       if (result === null) return fail(`❌ No background session on ${resolved}. Start one with serial_start.`);
-      if (result.length === 0) return ok(`📡 ${resolved}: buffer is empty (no data yet).`);
-      return ok(`📡 ${resolved} — last ${result.length} lines:\n${result.join("\n")}`);
+      const state = serialBuffer.isConnected(resolved) ? "" : " (device disconnected, reconnecting)";
+      if (result.length === 0) return ok(`📡 ${resolved}${state}: buffer is empty (no data yet).`);
+      return ok(`📡 ${resolved}${state} — last ${result.length} lines:\n${result.join("\n")}`);
     }
   );
 
@@ -229,7 +231,8 @@ export function registerSerialTools(server: McpServer): void {
       const sessions = serialBuffer.status();
       if (sessions.length === 0) return ok("📡 No active background serial sessions.");
       return ok("📡 Active sessions:\n" + sessions.map((s) =>
-        `${s.port}  @ ${s.baud} baud  |  ${s.lineCount} lines  |  ${s.byteCount} bytes  |  uptime: ${s.uptime}`
+        `${s.port}  @ ${s.baud} baud  |  ${s.lineCount} lines  |  ${s.byteCount} bytes  |  uptime: ${s.uptime}` +
+        (s.connected ? "" : "  |  disconnected, reconnecting")
       ).join("\n"));
     }
   );

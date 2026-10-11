@@ -110,11 +110,12 @@ async function listOsPorts(): Promise<OsPort[]> {
   }
 }
 
-export function roleForVendor(vendor: string): PortRole {
-  // CH340/CH341/CH343 bridges next to a native-USB ESP32-S3 are used for upload,
-  // the Espressif native USB port (303a) for the serial monitor. Everything else
-  // (Uno/Mega via 16U2, CP210x, FTDI, Leonardo, RP2040, ...) does both.
-  if (vendor === "1a86") return "upload";
+export function roleFor(vendor: string, product: string): PortRole {
+  // Dual-USB ESP32-S3 boards: the CH343 bridge (1a86:55d3) is used for upload,
+  // the Espressif native USB port (303a) for the serial monitor. Other WCH
+  // chips (e.g. the CH340 on Nano/NodeMCU clones) are complete boards of
+  // their own, as is everything else (16U2, CP210x, FTDI, Leonardo, RP2040...).
+  if (vendor === "1a86" && product === "55d3") return "upload";
   if (vendor === "303a") return "monitor";
   return "both";
 }
@@ -130,7 +131,7 @@ export function mergePorts(osPorts: OsPort[], cliPorts: CliPort[]): DetectedPort
       product: p.product,
       serial: p.serial,
       description: p.manufacturer,
-      role: roleForVendor(p.vendor),
+      role: roleFor(p.vendor, p.product),
       boards: [],
     });
   }
@@ -149,7 +150,7 @@ export function mergePorts(osPorts: OsPort[], cliPorts: CliPort[]): DetectedPort
       product: c.pid,
       serial: c.serial,
       description: c.label,
-      role: roleForVendor(c.vid),
+      role: roleFor(c.vid, c.pid),
       boards: c.boards,
     });
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mergePorts, parseBoardListJson, pickPorts, portPresenceChecker, roleForVendor, type DetectedPort } from "../src/lib/ports.js";
+import { mergePorts, parseBoardListJson, pickPorts, portPresenceChecker, roleFor, type DetectedPort } from "../src/lib/ports.js";
 
 const CLI_JSON = JSON.stringify({
   detected_ports: [
@@ -39,10 +39,11 @@ test("parses the pre-1.0 array format and survives garbage", () => {
 });
 
 test("vendor roles", () => {
-  assert.equal(roleForVendor("1a86"), "upload");
-  assert.equal(roleForVendor("303a"), "monitor");
-  assert.equal(roleForVendor("2341"), "both");
-  assert.equal(roleForVendor("10c4"), "both");
+  assert.equal(roleFor("1a86", "55d3"), "upload"); // CH343 on dual-USB ESP32-S3 boards
+  assert.equal(roleFor("1a86", "7523"), "both");   // CH340 clone: a board of its own
+  assert.equal(roleFor("303a", "1001"), "monitor");
+  assert.equal(roleFor("2341", "0043"), "both");
+  assert.equal(roleFor("10c4", "ea60"), "both");
 });
 
 test("ESP32-S3 dual USB: CH343 for upload, native USB for monitor", () => {
@@ -83,7 +84,7 @@ test("no ports → null", () => {
 });
 
 const port = (p: Partial<DetectedPort> & { port: string; vendor: string }): DetectedPort => ({
-  product: "0000", serial: "", description: "", role: roleForVendor(p.vendor), boards: [], ...p,
+  product: "0000", serial: "", description: "", role: roleFor(p.vendor, p.product ?? "0000"), boards: [], ...p,
 });
 
 test("two different boards are never mixed: CH340 Nano clone + genuine Uno", () => {
@@ -131,5 +132,15 @@ test("port presence: COM ports are looked up in the port list on Windows", async
   const posix = await portPresenceChecker("linux");
   assert.equal(posix("/dev/null"), process.platform !== "win32");
   assert.equal(posix("/dev/ttyDOESNOTEXIST9"), false);
+});
+
+test("a CH340 clone next to a native-USB ESP32 is not mistaken for one dual-USB board", () => {
+  const clone = port({ port: "/dev/ttyUSB0", vendor: "1a86", product: "7523" });
+  const c3 = port({ port: "/dev/ttyACM0", vendor: "303a", product: "1001", serial: "AA:BB", boards: [{ name: "ESP32C3 Dev Module", fqbn: "esp32:esp32:esp32c3" }] });
+  const pick = pickPorts([clone, c3])!;
+  assert.equal(pick.paired, false);
+  assert.equal(pick.uploadPort, "/dev/ttyACM0");
+  assert.equal(pick.monitorPort, "/dev/ttyACM0");
+  assert.deepEqual(pick.otherPorts.map((p) => p.port), ["/dev/ttyUSB0"]);
 });
 

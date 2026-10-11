@@ -164,7 +164,9 @@ ESP32-S3 boards with two USB ports are handled automatically by `detect_board`:
 | COM / UART | Upload sketches | CH343 (1a86:55d3) |
 | USB | Serial monitor | Native ESP32-S3 (303a:1001) |
 
-If more than one board is connected, `detect_board` lists the other ports; pick the right ones with `board_config`.
+Only this CH343 + native-USB combination is paired automatically. With other dual-USB layouts (e.g. CP2102 + native USB),
+`detect_board` uses the native port for both and lists the other one. If more than one board is connected, `detect_board`
+lists the other ports; pick the right ones with `board_config`.
 
 ## Project Config (`arduino-mcp.yaml`)
 

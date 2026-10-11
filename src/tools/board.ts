@@ -10,6 +10,17 @@ import { autoDetect, detectPorts, pickPorts, type DetectedPort } from "../lib/po
 import { assertFqbn, assertSerialPort, parseBoardOptions, UserError } from "../lib/validate.js";
 import { DESTRUCTIVE, fail, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
+/** Settings board_config can remove (clear) and the option field behind each. */
+const CLEARABLE = ["upload_port", "monitor_port", "flash_size", "psram", "cdc_on_boot", "partition_scheme", "upload_speed",
+  "extra_options"] as const;
+const CLEAR_FIELDS: Record<"flash_size" | "psram" | "cdc_on_boot" | "partition_scheme" | "upload_speed", OptionField> = {
+  flash_size: "flashSize",
+  psram: "psram",
+  cdc_on_boot: "cdcOnBoot",
+  partition_scheme: "partitionScheme",
+  upload_speed: "uploadSpeed",
+};
+
 function roleLabel(p: DetectedPort): string {
   return p.role === "upload" ? "upload" : p.role === "monitor" ? "monitor" : "upload+monitor";
 }
@@ -153,7 +164,8 @@ export function registerBoardTools(server: McpServer): void {
         "Shows or updates the saved default board, or switches the default to another saved board (action=use, id from show). " +
         "ESP32 options: flash_size, psram, cdc_on_boot, partition_scheme, upload_speed. " +
         "ESP8266: upload_speed. Any other board menu option (e.g. Nano's cpu=atmega328old) goes into extra_options. " +
-        "Pass an empty string to clear an option. Use board_options to see what a board supports.",
+        "Empty strings mean \"not given\"; to remove saved settings (back to the board default) pass clear, e.g. [\"psram\"]. " +
+        "Use board_options to see what a board supports.",
       inputSchema: {
         action: z.enum(["show", "set", "use"]).default("show"),
         id: z.string().optional().describe("Saved board to make the default (action=use); IDs are listed by action=show"),
@@ -166,17 +178,26 @@ export function registerBoardTools(server: McpServer): void {
         partition_scheme: z.string().optional().describe("ESP32 PartitionScheme, e.g. default, huge_app, min_spiffs, no_ota"),
         upload_speed: z.string().optional().describe("ESP32/ESP8266 upload baud, e.g. 921600, 460800, 115200"),
         extra_options: z.string().optional().describe("Other menu options as key=value,key2=value2 (replaces the previous value)"),
+        clear: z.array(z.enum(CLEARABLE)).optional().describe("Saved settings to remove with action=set, e.g. [\"psram\", \"upload_port\"]"),
       },
       annotations: WRITES,
     },
     async (args) => {
+      // Some clients send every optional field, empty when unused, so "" always
+      // means "not given"; removing a setting is explicit (clear).
+      const given = (v: string | undefined) => (v === "" ? undefined : v);
+      const id = given(args.id);
+      const a = {
+        fqbn: given(args.fqbn), upload_port: given(args.upload_port), monitor_port: given(args.monitor_port),
+        flash_size: given(args.flash_size), psram: given(args.psram), cdc_on_boot: given(args.cdc_on_boot),
+        partition_scheme: given(args.partition_scheme), upload_speed: given(args.upload_speed), extra_options: given(args.extra_options),
+      };
+      const clear = new Set(args.clear ?? []);
       // Never silently ignore arguments: they would end up applied to (or
       // missing from) a different board than the caller meant.
-      // Some clients send every optional field, empty when unused: "" only
-      // means "clear this option" for action=set.
-      const id = args.id || undefined;
-      const settings = (["fqbn", "upload_port", "monitor_port", "flash_size", "psram", "cdc_on_boot", "partition_scheme",
-        "upload_speed", "extra_options"] as const).filter((k) => args[k] !== undefined && (args.action === "set" || args[k] !== ""));
+      const settings = [...(Object.keys(a) as Array<keyof typeof a>).filter((k) => a[k] !== undefined), ...(clear.size ? ["clear"] : [])];
+      const both = [...clear].filter((k) => a[k] !== undefined);
+      if (both.length) throw new UserError(`${both.join(", ")} given and cleared in the same call; pass one or the other.`);
       if (id !== undefined && args.action !== "use") {
         throw new UserError(`id is only used with action=use. To work with board "${id}", select it first: board_config action=use id=${id}`);
       }
@@ -223,14 +244,21 @@ export function registerBoardTools(server: McpServer): void {
       return updateConfig((cfg) => {
         // Create a manual entry when nothing was detected yet.
         if (!getDefaultBoard(cfg)) {
-          if (!args.fqbn) throw new UserError('No saved board yet. Run "detect_board", or pass fqbn to create one manually.');
+          if (!a.fqbn) throw new UserError('No saved board yet. Run "detect_board", or pass fqbn to create one manually.');
           cfg.boards.manual = { fqbn: "", family: "unknown", uploadPort: "", monitorPort: "", lastSeen: new Date().toISOString() };
           cfg.defaultBoard = "manual";
         }
         const b = getDefaultBoard(cfg)!;
 
-        if (args.fqbn) {
-          const { base, options } = splitFqbn(assertFqbn(args.fqbn));
+        // removals first, so values given in the same call (or inside the fqbn) win
+        for (const k of clear) {
+          if (k === "upload_port") b.uploadPort = "";
+          else if (k === "monitor_port") b.monitorPort = "";
+          else if (k === "extra_options") b.extraOptions = undefined;
+          else setBoardOption(b, CLEAR_FIELDS[k], undefined);
+        }
+        if (a.fqbn) {
+          const { base, options } = splitFqbn(assertFqbn(a.fqbn));
           if (base !== b.fqbn) {
             // Options of a different board would make the FQBN invalid.
             b.extraOptions = undefined;
@@ -241,25 +269,25 @@ export function registerBoardTools(server: McpServer): void {
           b.fqbnSetByUser = true;
           if (options) applyBoardOptions(b, options);
         }
-        if (args.upload_port !== undefined) b.uploadPort = args.upload_port ? assertSerialPort(args.upload_port) : "";
-        if (args.monitor_port !== undefined) b.monitorPort = args.monitor_port ? assertSerialPort(args.monitor_port) : "";
-        if (args.extra_options !== undefined) {
-          parseBoardOptions(args.extra_options);
+        if (a.upload_port) b.uploadPort = assertSerialPort(a.upload_port);
+        if (a.monitor_port) b.monitorPort = assertSerialPort(a.monitor_port);
+        if (a.extra_options) {
+          parseBoardOptions(a.extra_options);
           b.extraOptions = undefined;
-          applyBoardOptions(b, args.extra_options);
+          applyBoardOptions(b, a.extra_options);
         }
 
         const notes: string[] = [];
         const fieldArgs: Array<[OptionField, string, string | undefined]> = [
-          ["flashSize", "flash_size", args.flash_size],
-          ["psram", "psram", args.psram],
-          ["cdcOnBoot", "cdc_on_boot", args.cdc_on_boot],
-          ["partitionScheme", "partition_scheme", args.partition_scheme],
-          ["uploadSpeed", "upload_speed", args.upload_speed],
+          ["flashSize", "flash_size", a.flash_size],
+          ["psram", "psram", a.psram],
+          ["cdcOnBoot", "cdc_on_boot", a.cdc_on_boot],
+          ["partitionScheme", "partition_scheme", a.partition_scheme],
+          ["uploadSpeed", "upload_speed", a.upload_speed],
         ];
         for (const [field, argName, value] of fieldArgs) {
           if (value === undefined) continue;
-          if (value && !optionKey(b.family, field)) {
+          if (!optionKey(b.family, field)) {
             // Not stored: on load, uploadSpeed on AVR boards is read as v3's "cpu" setting.
             notes.push(`⚠️ ${argName} has no effect on ${b.family} boards and was not saved; use extra_options for their menu options.`);
             continue;

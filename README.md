@@ -218,7 +218,8 @@ Created by `detect_board` (or `board_config` with `action=set`):
 }
 ```
 
-Board options are only added when you set them, so the board's defaults apply otherwise. Options that are not specific to ESP boards (e.g. `cpu=atmega328old` for an old-bootloader Nano) go into `extra_options`.
+Board options are only added when you set them, so the board's defaults apply otherwise. To remove a saved setting again, use `board_config` with
+`clear`, e.g. `clear: ["psram"]` (empty strings are treated as "not given"). Options that are not specific to ESP boards (e.g. `cpu=atmega328old` for an old-bootloader Nano) go into `extra_options`.
 
 ## Environment Variables
 

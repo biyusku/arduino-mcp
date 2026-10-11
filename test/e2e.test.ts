@@ -143,13 +143,13 @@ describe("arduino-mcp over stdio", () => {
     r = await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3", psram: "opi", flash_size: "16M" });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
 
-    r = await mcp.call("board_config", { action: "set", psram: "", upload_speed: "921600" });
+    r = await mcp.call("board_config", { action: "set", clear: ["psram"], upload_speed: "921600" });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,UploadSpeed=921600\n/);
 
     // options given inside the FQBN behave like the dedicated parameters
     r = await mcp.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3:PSRAM=opi,DebugLevel=info" });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,UploadSpeed=921600,DebugLevel=info\n/);
-    r = await mcp.call("board_config", { action: "set", psram: "" });
+    r = await mcp.call("board_config", { action: "set", clear: ["psram"] });
     assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,UploadSpeed=921600,DebugLevel=info\n/);
     r = await mcp.call("board_config", { action: "show" });
     assert.match(r.text, /PSRAM:\s+board default/);
@@ -420,9 +420,24 @@ describe("arduino-mcp over stdio", () => {
       partition_scheme: "", upload_speed: "", extra_options: "" };
     r = await mcp.call("board_config", { ...empty, action: "show" });
     assert.equal(r.isError, false, r.text);
-    r = await mcp.call("board_config", { ...empty, action: "set", fqbn: "arduino:avr:uno", upload_port: "/dev/ttyACM0" });
+    r = await mcp.call("board_config", { ...empty, action: "set", fqbn: "arduino:avr:nano:cpu=atmega328old", upload_port: "/dev/ttyUSB0", monitor_port: "/dev/ttyUSB0" });
     assert.equal(r.isError, false, r.text);
-    assert.match(r.text, /FQBN: arduino:avr:uno\n/);
+    assert.match(r.text, /FQBN: arduino:avr:nano:cpu=atmega328old\nUpload: \/dev\/ttyUSB0 \| Monitor: \/dev\/ttyUSB0/);
+    // changing just the port keeps everything else ("" = not given)
+    r = await mcp.call("board_config", { ...empty, action: "set", upload_port: "/dev/ttyUSB1" });
+    assert.match(r.text, /FQBN: arduino:avr:nano:cpu=atmega328old\nUpload: \/dev\/ttyUSB1 \| Monitor: \/dev\/ttyUSB0/);
+    // options inside the fqbn are kept too
+    r = await mcp.call("board_config", { ...empty, action: "set", fqbn: "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi" });
+    assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
+
+    // removing settings is explicit
+    r = await mcp.call("board_config", { action: "set", clear: ["psram", "monitor_port"] });
+    assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M\nUpload: \/dev\/ttyUSB1 \| Monitor: not set/);
+    r = await mcp.call("board_config", { action: "set", psram: "opi", clear: ["psram"] });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /psram given and cleared in the same call/);
+    r = await mcp.call("board_config", { action: "show", clear: ["psram"] });
+    assert.equal(r.isError, true);
   });
 
   test("board ids that are Object.prototype names are just unknown ids", async () => {

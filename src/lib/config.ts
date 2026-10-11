@@ -54,11 +54,38 @@ export async function loadConfig(file = CONFIG_FILE): Promise<Config> {
   }
 }
 
+let tmpCounter = 0;
+
 export async function saveConfig(cfg: Config, file = CONFIG_FILE): Promise<void> {
-  // Write to a temp file and rename, so a crash never leaves a half-written config.
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf-8");
-  await fs.rename(tmp, file);
+  // Write to a unique temp file and rename, so a crash or a concurrent save
+  // never leaves a half-written config.
+  const tmp = `${file}.${process.pid}.${++tmpCounter}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), "utf-8");
+    await fs.rename(tmp, file);
+  } catch (e) {
+    await fs.rm(tmp, { force: true });
+    throw e;
+  }
+}
+
+const updateQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Load → change → save, one at a time per file, so tool calls that run in
+ * parallel (e.g. detect_board and board_config) cannot lose each other's
+ * changes. Nothing is saved if `change` throws.
+ */
+export function updateConfig<T>(change: (cfg: Config) => T | Promise<T>, file = CONFIG_FILE): Promise<T> {
+  const previous = updateQueues.get(file) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    const cfg = await loadConfig(file);
+    const result = await change(cfg);
+    await saveConfig(cfg, file);
+    return result;
+  });
+  updateQueues.set(file, next.catch(() => {}));
+  return next;
 }
 
 export function getDefaultBoard(cfg: Config): BoardConfig | null {

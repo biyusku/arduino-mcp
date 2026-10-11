@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cli, esptool } from "../lib/arduino.js";
 import {
-  buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, mergeOptions, saveConfig, splitFqbn,
+  buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, mergeOptions, splitFqbn, updateConfig,
   type BoardConfig,
 } from "../lib/config.js";
 import { assertPortAccessible, autoDetect, detectPorts, releasePort, type DetectedPort } from "../lib/ports.js";
@@ -67,23 +67,24 @@ export function registerBoardTools(server: McpServer): void {
       }
 
       if (save) {
-        const cfg = await loadConfig();
-        const key = d.serial || `unknown_${Date.now()}`;
-        const prev = cfg.boards[key];
-        const fqbn = d.fqbn ? splitFqbn(d.fqbn).base : prev?.fqbn || "";
-        // Keep user-chosen options (flash size, PSRAM, ...) unless the board type changed.
-        const base: Partial<BoardConfig> = prev && prev.fqbn === fqbn ? prev : {};
-        cfg.boards[key] = {
-          ...base,
-          fqbn,
-          family: fqbn ? getPlatformFamily(fqbn) : "unknown",
-          uploadPort: d.uploadPort,
-          monitorPort: d.monitorPort,
-          boardName: d.boardName || prev?.boardName,
-          lastSeen: new Date().toISOString(),
-        };
-        cfg.defaultBoard = key;
-        await saveConfig(cfg);
+        const fqbn = await updateConfig((cfg) => {
+          const key = d.serial || `unknown_${Date.now()}`;
+          const prev = cfg.boards[key];
+          const fqbn = d.fqbn ? splitFqbn(d.fqbn).base : prev?.fqbn || "";
+          // Keep user-chosen options (flash size, PSRAM, ...) unless the board type changed.
+          const base: Partial<BoardConfig> = prev && prev.fqbn === fqbn ? prev : {};
+          cfg.boards[key] = {
+            ...base,
+            fqbn,
+            family: fqbn ? getPlatformFamily(fqbn) : "unknown",
+            uploadPort: d.uploadPort,
+            monitorPort: d.monitorPort,
+            boardName: d.boardName || prev?.boardName,
+            lastSeen: new Date().toISOString(),
+          };
+          cfg.defaultBoard = key;
+          return fqbn;
+        });
         lines.push("", "✅ Saved as default board.");
         if (!fqbn) {
           lines.push(
@@ -119,9 +120,8 @@ export function registerBoardTools(server: McpServer): void {
       annotations: WRITES,
     },
     async (args) => {
-      const cfg = await loadConfig();
-
       if (args.action === "show") {
+        const cfg = await loadConfig();
         const b = getDefaultBoard(cfg);
         if (!b) return ok('❌ No saved board. Run "detect_board" or "board_config" with action=set and fqbn.');
         const esp = b.family === "esp32";
@@ -143,40 +143,40 @@ export function registerBoardTools(server: McpServer): void {
         ].filter((l) => l !== null).join("\n"));
       }
 
-      // Create a manual entry when nothing was detected yet.
-      if (!getDefaultBoard(cfg)) {
-        if (!args.fqbn) throw new UserError('No saved board yet. Run "detect_board", or pass fqbn to create one manually.');
-        cfg.boards.manual = { fqbn: "", family: "unknown", uploadPort: "", monitorPort: "", lastSeen: new Date().toISOString() };
-        cfg.defaultBoard = "manual";
-      }
-      const b = getDefaultBoard(cfg)!;
-
-      if (args.fqbn) {
-        const { base, options } = splitFqbn(assertFqbn(args.fqbn));
-        if (base !== b.fqbn) {
-          // Options of a different board would make the FQBN invalid.
-          b.extraOptions = undefined;
-          b.flashSize = b.psram = b.cdcOnBoot = b.partitionScheme = b.uploadSpeed = undefined;
+      return updateConfig((cfg) => {
+        // Create a manual entry when nothing was detected yet.
+        if (!getDefaultBoard(cfg)) {
+          if (!args.fqbn) throw new UserError('No saved board yet. Run "detect_board", or pass fqbn to create one manually.');
+          cfg.boards.manual = { fqbn: "", family: "unknown", uploadPort: "", monitorPort: "", lastSeen: new Date().toISOString() };
+          cfg.defaultBoard = "manual";
         }
-        b.fqbn = base;
-        b.family = getPlatformFamily(base);
-        b.extraOptions = mergeOptions(b.extraOptions, options);
-      }
-      if (args.upload_port !== undefined) b.uploadPort = args.upload_port ? assertSerialPort(args.upload_port) : "";
-      if (args.monitor_port !== undefined) b.monitorPort = args.monitor_port ? assertSerialPort(args.monitor_port) : "";
-      if (args.flash_size !== undefined) b.flashSize = optionValue("FlashSize", args.flash_size);
-      if (args.psram !== undefined) b.psram = optionValue("PSRAM", args.psram);
-      if (args.cdc_on_boot !== undefined) b.cdcOnBoot = optionValue("CDCOnBoot", args.cdc_on_boot);
-      if (args.partition_scheme !== undefined) b.partitionScheme = optionValue("PartitionScheme", args.partition_scheme);
-      if (args.upload_speed !== undefined) b.uploadSpeed = optionValue("UploadSpeed", args.upload_speed);
-      if (args.extra_options !== undefined) {
-        parseBoardOptions(args.extra_options);
-        b.extraOptions = args.extra_options.trim() || undefined;
-      }
-      b.lastSeen = new Date().toISOString();
-      await saveConfig(cfg);
+        const b = getDefaultBoard(cfg)!;
 
-      return ok(`✅ Settings saved.\nFQBN: ${buildFqbn(b) || "not set"}\nUpload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`);
+        if (args.fqbn) {
+          const { base, options } = splitFqbn(assertFqbn(args.fqbn));
+          if (base !== b.fqbn) {
+            // Options of a different board would make the FQBN invalid.
+            b.extraOptions = undefined;
+            b.flashSize = b.psram = b.cdcOnBoot = b.partitionScheme = b.uploadSpeed = undefined;
+          }
+          b.fqbn = base;
+          b.family = getPlatformFamily(base);
+          b.extraOptions = mergeOptions(b.extraOptions, options);
+        }
+        if (args.upload_port !== undefined) b.uploadPort = args.upload_port ? assertSerialPort(args.upload_port) : "";
+        if (args.monitor_port !== undefined) b.monitorPort = args.monitor_port ? assertSerialPort(args.monitor_port) : "";
+        if (args.flash_size !== undefined) b.flashSize = optionValue("FlashSize", args.flash_size);
+        if (args.psram !== undefined) b.psram = optionValue("PSRAM", args.psram);
+        if (args.cdc_on_boot !== undefined) b.cdcOnBoot = optionValue("CDCOnBoot", args.cdc_on_boot);
+        if (args.partition_scheme !== undefined) b.partitionScheme = optionValue("PartitionScheme", args.partition_scheme);
+        if (args.upload_speed !== undefined) b.uploadSpeed = optionValue("UploadSpeed", args.upload_speed);
+        if (args.extra_options !== undefined) {
+          parseBoardOptions(args.extra_options);
+          b.extraOptions = args.extra_options.trim() || undefined;
+        }
+        b.lastSeen = new Date().toISOString();
+        return ok(`✅ Settings saved.\nFQBN: ${buildFqbn(b) || "not set"}\nUpload: ${b.uploadPort || "not set"} | Monitor: ${b.monitorPort || "not set"}`);
+      });
     }
   );
 

@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
-  buildFqbn, getPlatformFamily, loadConfig, mergeOptions, saveConfig, splitFqbn, type BoardConfig,
+  buildFqbn, getPlatformFamily, loadConfig, mergeOptions, saveConfig, splitFqbn, updateConfig, type BoardConfig,
 } from "../src/lib/config.js";
 import { UserError } from "../src/lib/validate.js";
 
@@ -89,3 +89,34 @@ test("config written by v3 is upgraded: family recomputed, broken AVR cpu= optio
   assert.equal(cfg.boards.B.family, "esp8266");
   assert.equal(buildFqbn(cfg.boards.B), "esp8266:esp8266:d1_mini:baud=921600");
 });
+
+test("parallel saves and updates neither fail nor lose changes", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-cfg-"));
+  const file = path.join(dir, "cfg.json");
+
+  const saves = await Promise.allSettled(
+    Array.from({ length: 10 }, (_, i) => saveConfig({ boards: { [`S${i}`]: board({ fqbn: "arduino:avr:uno" }) } }, file))
+  );
+  assert.deepEqual(saves.filter((r) => r.status === "rejected"), []);
+
+  await Promise.all(Array.from({ length: 20 }, (_, i) => updateConfig((cfg) => {
+    cfg.boards[`B${i}`] = board({ fqbn: "arduino:avr:uno", family: "avr" });
+  }, file)));
+  const cfg = await loadConfig(file);
+  for (let i = 0; i < 20; i++) assert.ok(cfg.boards[`B${i}`], `B${i} lost`);
+  assert.deepEqual(fs.readdirSync(dir), ["cfg.json"]);
+});
+
+test("updateConfig saves nothing when the change throws", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "amcp-cfg-"));
+  const file = path.join(dir, "cfg.json");
+  await saveConfig({ boards: {} }, file);
+  await assert.rejects(updateConfig((cfg) => {
+    cfg.boards.X = board({});
+    throw new UserError("nope");
+  }, file), /nope/);
+  assert.deepEqual(await loadConfig(file), { boards: {} });
+  await updateConfig((cfg) => { cfg.defaultBoard = "after-error"; }, file); // queue still works
+  assert.equal((await loadConfig(file)).defaultBoard, "after-error");
+});
+

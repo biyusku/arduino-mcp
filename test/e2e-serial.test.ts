@@ -111,6 +111,21 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
     assert.match(r.text, /No background session/);
   });
 
+  test("serial tools take monitor port and baud from a sketch's arduino-mcp.yaml", async () => {
+    await mcp.call("create_sketch", { name: "pinned", template: "blink" });
+    await mcp.call("project_init", { name: "pinned", monitor_port: board.port, baud: 9600 });
+    let r = await mcp.call("serial_start", { sketch: "pinned" });
+    assert.match(r.text, new RegExp(`Started on ${board.port} @ 9600 baud`));
+    r = await mcp.call("serial_monitor", { sketch: "pinned", seconds: 1 });
+    assert.match(r.text, /@ 9600 \(1s\)/);
+    await mcp.call("serial_stop", { port: board.port });
+
+    await mcp.call("project_init", { name: "pinned", overwrite: true, monitor_port: "/dev/ttyGONE7" });
+    r = await mcp.call("serial_monitor", { sketch: "pinned", seconds: 1 });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /pins monitor port \/dev\/ttyGONE7 for this sketch, but it is not connected/);
+  });
+
   test("invalid and missing ports are reported", async () => {
     let r = await mcp.call("serial_monitor", { port: "/dev/ttyDOESNOTEXIST9", seconds: 1 });
     assert.equal(r.isError, true);

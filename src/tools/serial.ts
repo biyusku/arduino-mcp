@@ -1,13 +1,34 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getDefaultBoard, loadConfig, resetsOnOpen, type BoardConfig } from "../lib/config.js";
-import { assertPortAccessible, detectPorts } from "../lib/ports.js";
+import { assertPortAccessible, detectPorts, portPresenceChecker } from "../lib/ports.js";
+import { CONFIG_FILENAME, readProjectConfig } from "../project.js";
 import { assertSerialPort, UserError } from "../lib/validate.js";
 import { serialBuffer } from "../serial-buffer.js";
 import { fail, familyForPort, ok, READ_ONLY, reply, resolvePort, WRITES } from "./util.js";
 
-const portArg = z.string().optional().describe("Serial port (default: saved monitor port, then auto-detect)");
-const baudArg = z.number().int().positive().default(115200).describe("Baud rate");
+const portArg = z.string().optional().describe("Serial port (default: the sketch's pinned monitor port, saved monitor port, then auto-detect)");
+const sketchArg = z.string().optional().describe("Sketch whose arduino-mcp.yaml provides the monitor port and baud rate");
+
+/**
+ * Port and baud for a serial call: explicit arguments, then the sketch's
+ * arduino-mcp.yaml (monitor_port, baud), then the saved board / auto-detect.
+ */
+async function serialTarget(port: string | undefined, baud: number | undefined, sketch: string | undefined) {
+  if (sketch) {
+    const project = await readProjectConfig(sketch);
+    if (!project) throw new UserError(`${sketch}/${CONFIG_FILENAME} not found. Create it with project_init.`);
+    const pinned = project.legacy ? undefined : project.monitor_port; // v3 files: copies, never used
+    if (!port && pinned) {
+      if (!(await portPresenceChecker())(pinned)) {
+        throw new UserError(`${CONFIG_FILENAME} pins monitor port ${pinned} for this sketch, but it is not connected. Connect that board or pass port.`);
+      }
+      port = pinned;
+    }
+    baud ??= project.baud;
+  }
+  return { port: await resolvePort("monitor", port), baud };
+}
 const optionalBaudArg = z.number().int().positive().optional()
   .describe("Baud rate (default: the running background session's, else 115200)");
 
@@ -60,13 +81,15 @@ export function registerSerialTools(server: McpServer): void {
       inputSchema: {
         port: portArg,
         baud: optionalBaudArg,
+        sketch: sketchArg,
         seconds: z.number().min(1).max(60).default(5).describe("How long to read (1-60 s)"),
       },
       annotations: READ_ONLY,
     },
-    async ({ port, baud, seconds }) => {
-      const resolved = await resolvePort("monitor", port);
-      const effective = effectiveBaud(resolved, baud);
+    async ({ port, baud, sketch, seconds }) => {
+      const target = await serialTarget(port, baud, sketch);
+      const resolved = target.port;
+      const effective = effectiveBaud(resolved, target.baud);
       if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
       const lines = await serialBuffer.readFor(resolved, effective, seconds * 1000);
       return ok(lines.length
@@ -87,6 +110,7 @@ export function registerSerialTools(server: McpServer): void {
         message: z.string().describe("Text to send"),
         port: portArg,
         baud: optionalBaudArg,
+        sketch: sketchArg,
         newline: z.boolean().default(true).describe("Append a newline (\\n)"),
         read_response: z.boolean().default(true).describe("Wait for and return the reply"),
         response_seconds: z.number().min(0).max(30).default(2).describe("How long to wait for a reply"),
@@ -95,9 +119,10 @@ export function registerSerialTools(server: McpServer): void {
       },
       annotations: WRITES,
     },
-    async ({ message, port, baud, newline, read_response, response_seconds, wait_after_open_ms }) => {
-      const resolved = await resolvePort("monitor", port);
-      const effective = effectiveBaud(resolved, baud);
+    async ({ message, port, baud, sketch, newline, read_response, response_seconds, wait_after_open_ms }) => {
+      const target = await serialTarget(port, baud, sketch);
+      const resolved = target.port;
+      const effective = effectiveBaud(resolved, target.baud);
       if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
       const board = getDefaultBoard(await loadConfig());
       const openDelay = wait_after_open_ms ??
@@ -139,13 +164,17 @@ export function registerSerialTools(server: McpServer): void {
       description:
         "Keeps the serial port open in the background and buffers its output (last 500 lines). Read it any time with " +
         "serial_read; send_serial and serial_monitor reuse the session. Uploads pause and resume it automatically.",
-      inputSchema: { port: portArg, baud: baudArg },
+      inputSchema: {
+        port: portArg,
+        baud: z.number().int().positive().optional().describe("Baud rate (default: the sketch's baud, else 115200)"),
+        sketch: sketchArg,
+      },
       annotations: WRITES,
     },
-    async ({ port, baud }) => {
-      const resolved = await resolvePort("monitor", port);
-      if (!serialBuffer.isRunning(resolved)) await assertPortAccessible(resolved);
-      return ok(`✅ ${await serialBuffer.start(resolved, baud)}`);
+    async ({ port, baud, sketch }) => {
+      const target = await serialTarget(port, baud, sketch);
+      if (!serialBuffer.isRunning(target.port)) await assertPortAccessible(target.port);
+      return ok(`✅ ${await serialBuffer.start(target.port, target.baud ?? 115200)}`);
     }
   );
 

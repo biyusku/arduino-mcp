@@ -16,7 +16,7 @@ Claude Code (or any MCP client) can write, compile, upload, monitor and diagram 
 - 📡 **Persistent serial sessions** — `serial_start` keeps the port open and buffers output; uploads pause and resume it automatically
 - 📬 **Serial send** — send commands to the board (no unwanted reset on Uno/Nano)
 - 🌐 **OTA / WiFi upload** — upload over the air without USB
-- 📦 **Project system** — `arduino-mcp.yaml` per sketch: board, ports, libraries and build flags used by compile/upload
+- 📦 **Project system** — `arduino-mcp.yaml` per sketch: board, ports, baud, libraries and build flags
 - 🔌 **Circuit diagrams** — SVG + Markdown wiring diagrams from pin connections
 - 📚 **Library & platform management** — install, uninstall, list, search, update
 - 🛡️ **Safe by design** — no shell, no `sudo`/`chmod`, validated names and paths, destructive tools are annotated
@@ -187,7 +187,9 @@ build_flags:
   - -DDEBUG=1
 ```
 
-Compile and upload tools resolve settings in this order: **tool argument → `arduino-mcp.yaml` → saved board**.
+Compile and upload tools resolve the board (FQBN), upload port and build flags in this order: **tool argument → `arduino-mcp.yaml` →
+saved board**. The serial tools (`serial_start`, `serial_monitor`, `send_serial`) use the yaml's `monitor_port` and `baud` when you pass
+`sketch`. `libraries` are installed with `project_install_deps`.
 `project_init` only pins `fqbn` and ports you pass explicitly, so `detect_board`/`board_config` changes keep applying to the sketch.
 A pinned port that is not connected falls back to the saved board's port, as long as the sketch is built for that saved board
 (otherwise the upload stops instead of flashing a different board). Files written by arduino-mcp v3 are still read, but

@@ -216,10 +216,12 @@ export function registerBoardTools(server: McpServer): void {
         ];
         for (const [field, argName, value] of fieldArgs) {
           if (value === undefined) continue;
-          setBoardOption(b, field, optionValue(argName, value));
           if (value && !optionKey(b.family, field)) {
-            notes.push(`⚠️ ${argName} has no effect on ${b.family} boards; use extra_options for their menu options.`);
+            // Not stored: on load, uploadSpeed on AVR boards is read as v3's "cpu" setting.
+            notes.push(`⚠️ ${argName} has no effect on ${b.family} boards and was not saved; use extra_options for their menu options.`);
+            continue;
           }
+          setBoardOption(b, field, optionValue(argName, value));
         }
         b.lastSeen = new Date().toISOString();
         return ok([

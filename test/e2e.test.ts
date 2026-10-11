@@ -154,9 +154,12 @@ describe("arduino-mcp over stdio", () => {
     r = await mcp.call("board_config", { action: "show" });
     assert.match(r.text, /PSRAM:\s+board default/);
 
-    r = await mcp.call("board_config", { action: "set", fqbn: "arduino:avr:uno", psram: "opi" });
+    r = await mcp.call("board_config", { action: "set", fqbn: "arduino:avr:uno", psram: "opi", upload_speed: "fast" });
     assert.match(r.text, /FQBN: arduino:avr:uno\n/);
-    assert.match(r.text, /psram has no effect on avr boards/);
+    assert.match(r.text, /psram has no effect on avr boards and was not saved/);
+    assert.match(r.text, /upload_speed has no effect on avr boards/);
+    r = await mcp.call("board_config", { action: "show" }); // reloaded from disk
+    assert.match(r.text, /FQBN:\s+arduino:avr:uno\n/);
 
     r = await mcp.call("board_config", { action: "set", upload_port: "/dev/tty; reboot" });
     assert.equal(r.isError, true);

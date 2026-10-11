@@ -69,8 +69,12 @@ export function registerBoardTools(server: McpServer): void {
               prev = manual;
               delete cfg.boards.manual;
             } else {
-              manualNote = `Your manually configured board (${manual.fqbn}) does not match the detected board; ` +
-                'it is kept as "manual" and can be restored with board_config.';
+              // The detected board wins; tell the user how to get their setup back
+              // (full FQBN incl. options), and drop the entry nothing could reach.
+              const full = buildFqbn(manual);
+              manualNote = `Your manually configured board (${full}) does not match the detected board, so the detected ` +
+                `one is used. To use yours anyway: board_config action=set fqbn=${full}`;
+              delete cfg.boards.manual;
             }
           }
           const keepPrev = !!prev?.fqbn && (!!prev.fqbnSetByUser || candidates.length === 0 || candidates.includes(prev.fqbn));

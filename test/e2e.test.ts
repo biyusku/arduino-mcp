@@ -329,6 +329,29 @@ describe("arduino-mcp over stdio", () => {
       assert.match(r.text, /FQBN:\s+esp32:esp32:lolin_s3:FlashSize=16M,PSRAM=opi\n/);
       assert.match(r.text, /Upload port:\s+\/dev\/ttyACM0/);
 
+      // a manual setup that does not fit the detected board: the note restores it in one call
+      const own3 = makeSandbox();
+      const fresh3 = await connect(own3);
+      try {
+        await fresh3.call("board_config", { action: "set", fqbn: "esp32:esp32:esp32s3", psram: "opi", flash_size: "16M" });
+        fs.writeFileSync(path.join(own3.dir, "board-list.json"), JSON.stringify({
+          detected_ports: [{
+            port: { address: "/dev/ttyACM3", protocol: "serial", properties: { vid: "0x2341", pid: "0x0043", serialNumber: "UNO1" } },
+            matching_boards: [{ name: "Arduino Uno", fqbn: "arduino:avr:uno" }],
+          }],
+        }));
+        r = await fresh3.call("detect_board");
+        assert.match(r.text, /FQBN:\s+arduino:avr:uno\n/);
+        const restore = r.text.match(/board_config action=set fqbn=(\S+)/)?.[1];
+        assert.equal(restore, "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi");
+        r = await fresh3.call("board_config", { action: "set", fqbn: restore });
+        assert.match(r.text, /FQBN: esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi\n/);
+        const saved = JSON.parse(fs.readFileSync(own3.env.ARDUINO_MCP_CONFIG, "utf-8"));
+        assert.equal(saved.boards.manual, undefined);
+      } finally {
+        await fresh3.close();
+      }
+
       // an unidentifiable clone takes over a manual Nano setup as well
       const own2 = makeSandbox();
       const fresh2 = await connect(own2);

@@ -1,11 +1,12 @@
 # Fake serial board on a pseudo-terminal, for end-to-end tests.
-# Prints its device path, then sends "tick N" every 200 ms and answers each
-# received line with "ECHO:<line>".
+# Prints its device path, then sends "tick N" every 200 ms (not with
+# --silent) and answers each received line with "ECHO:<line>".
 import os
 import select
 import sys
 import time
 
+silent = "--silent" in sys.argv
 master, slave = os.openpty()
 print(os.ttyname(slave), flush=True)
 
@@ -22,7 +23,7 @@ while True:
         while b"\n" in buf:
             line, buf = buf.split(b"\n", 1)
             os.write(master, b"ECHO:" + line.strip() + b"\r\n")
-    if time.time() - last > 0.2:
+    if not silent and time.time() - last > 0.2:
         last = time.time()
         n += 1
         try:

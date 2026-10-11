@@ -165,6 +165,8 @@ ESP32-S3 boards with two USB ports are handled automatically by `detect_board`:
 | COM / UART | Upload sketches | CH343 (1a86:55d3) |
 | USB | Serial monitor | Native ESP32-S3 (303a:1001) |
 
+`Serial` only prints on the native USB port with **USB CDC On Boot** enabled (`board_config action=set cdc_on_boot=cdc`);
+the ESP32 core's default is off, and `Serial` then goes to the UART port. `detect_board` and empty serial reads point this out.
 Only this CH343 + native-USB combination is paired automatically. With other dual-USB layouts (e.g. CP2102 + native USB),
 `detect_board` uses the native port for both and lists the other one. If more than one board is connected, `detect_board`
 lists the others; choose one with `detect_board port=<its port>` (each board keeps its own saved settings, and

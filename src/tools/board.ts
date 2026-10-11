@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { cli, esptool, withExclusivePort } from "../lib/arduino.js";
 import {
-  applyBoardOptions, buildFqbn, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, optionKey, setBoardOption,
+  applyBoardOptions, buildFqbn, cdcHint, getDefaultBoard, getPlatformFamily, isEspFamily, loadConfig, optionKey, setBoardOption,
   splitFqbn, updateConfig, type OptionField,
   type BoardConfig,
 } from "../lib/config.js";
@@ -71,8 +71,9 @@ export function registerBoardTools(server: McpServer): void {
       let boardName = d.boardName;
       let keptChoice = false;
       let manualNote = "";
+      let saved: BoardConfig | null = null;
       if (save) {
-        ({ fqbn, boardName, keptChoice, manualNote } = await updateConfig((cfg) => {
+        ({ fqbn, boardName, keptChoice, manualNote, saved } = await updateConfig((cfg) => {
           const key = d.serial || `unknown_${Date.now()}`;
           let prev: BoardConfig | undefined = cfg.boards[key];
           const candidates = [d.fqbn, ...d.alternatives.map((b) => b.fqbn)]
@@ -120,10 +121,14 @@ export function registerBoardTools(server: McpServer): void {
             monitorPort: d.monitorPort,
             boardName: name,
             fqbnSetByUser: keepPrev ? prev!.fqbnSetByUser : undefined,
+            nativeUsbMonitor: d.ports.find((p) => p.port === d.monitorPort)?.vendor === "303a" || undefined,
             lastSeen: new Date().toISOString(),
           };
           cfg.defaultBoard = key;
-          return { fqbn: chosen, boardName: name, keptChoice: keepPrev && candidates.length > 0 && candidates[0] !== chosen, manualNote };
+          return {
+            fqbn: chosen, boardName: name, keptChoice: keepPrev && candidates.length > 0 && candidates[0] !== chosen, manualNote,
+            saved: cfg.boards[key],
+          };
         }));
       }
 
@@ -154,6 +159,8 @@ export function registerBoardTools(server: McpServer): void {
       }
       if (save) {
         lines.push("", "✅ Saved as default board.");
+        const hint = cdcHint(saved, d.monitorPort);
+        if (hint) lines.push(hint);
         if (!fqbn) {
           lines.push(
             "⚠️ The board type could not be identified (common for clones with CH340/CP210x chips). " +

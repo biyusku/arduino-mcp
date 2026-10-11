@@ -65,9 +65,9 @@ export async function connect(sb: Sandbox) {
 }
 
 /** Starts the fake serial board (Linux/macOS, needs python3); resolves with its tty path. */
-export function startFakeBoard(): Promise<{ port: string; proc: ChildProcessWithoutNullStreams }> {
+export function startFakeBoard(opts: { silent?: boolean } = {}): Promise<{ port: string; proc: ChildProcessWithoutNullStreams }> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("python3", [path.join(ROOT, "test", "fixtures", "fakeboard.py")]);
+    const proc = spawn("python3", [path.join(ROOT, "test", "fixtures", "fakeboard.py"), ...(opts.silent ? ["--silent"] : [])]);
     proc.once("error", reject);
     proc.stdout.once("data", (d: Buffer) => resolve({ port: d.toString().trim().split("\n")[0], proc }));
   });

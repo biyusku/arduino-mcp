@@ -24,6 +24,8 @@ export interface BoardConfig {
   boardName?: string;
   /** The FQBN was chosen with board_config; detect_board keeps it */
   fqbnSetByUser?: boolean;
+  /** The monitor port is an ESP32-S2/S3/C3 native USB port (Serial only appears there with USB CDC On Boot) */
+  nativeUsbMonitor?: boolean;
   lastSeen: string;
 }
 
@@ -266,3 +268,16 @@ export function mergeOptions(base: string | undefined, override: string | undefi
   for (const [k, v] of parseBoardOptions(override || "")) opts.set(k, v);
   return opts.size ? [...opts].map(([k, v]) => `${k}=${v}`).join(",") : undefined;
 }
+
+/**
+ * Why an ESP32-S2/S3/C3 native USB port may stay silent, or "" if that does
+ * not apply: Serial only prints there with "USB CDC On Boot" enabled, which
+ * is off by default in the ESP32 core (Serial then goes to UART0).
+ */
+export function cdcHint(board: BoardConfig | null, port: string): string {
+  if (!board || board.family !== "esp32" || !board.nativeUsbMonitor || port !== board.monitorPort || board.cdcOnBoot === "cdc") return "";
+  const uart = board.uploadPort && board.uploadPort !== board.monitorPort ? ` (until then Serial prints on ${board.uploadPort})` : "";
+  return `💡 ${port} is the chip's native USB port: Serial only prints there with "USB CDC On Boot" enabled${uart}. ` +
+    "Enable it with board_config action=set cdc_on_boot=cdc and upload again.";
+}
+

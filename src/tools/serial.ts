@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDefaultBoard, loadConfig, resetsOnOpen, type BoardConfig } from "../lib/config.js";
+import { cdcHint, getDefaultBoard, loadConfig, resetsOnOpen, type BoardConfig } from "../lib/config.js";
 import { assertPortAccessible, detectPorts, portPresenceChecker } from "../lib/ports.js";
 import { CONFIG_FILENAME, readProjectConfig } from "../project.js";
 import { assertSerialPort, UserError } from "../lib/validate.js";
@@ -94,7 +94,7 @@ export function registerSerialTools(server: McpServer): void {
       const lines = await serialBuffer.readFor(resolved, effective, seconds * 1000);
       return ok(lines.length
         ? `📡 ${resolved} @ ${effective} (${seconds}s):\n${lines.join("\n")}`
-        : `📡 ${resolved}: no data received in ${seconds}s.`);
+        : [`📡 ${resolved}: no data received in ${seconds}s.`, cdcHint(getDefaultBoard(await loadConfig()), resolved)].filter(Boolean).join("\n"));
     }
   );
 
@@ -196,7 +196,10 @@ export function registerSerialTools(server: McpServer): void {
       const result = serialBuffer.read(resolved, lines, clear);
       if (result === null) return fail(`❌ No background session on ${resolved}. Start one with serial_start.`);
       const state = serialBuffer.isConnected(resolved) ? "" : " (device disconnected, reconnecting)";
-      if (result.length === 0) return ok(`📡 ${resolved}${state}: buffer is empty (no data yet).`);
+      if (result.length === 0) {
+        const hint = cdcHint(getDefaultBoard(await loadConfig()), resolved);
+        return ok([`📡 ${resolved}${state}: buffer is empty (no data yet).`, hint].filter(Boolean).join("\n"));
+      }
       return ok(`📡 ${resolved}${state} — last ${result.length} lines:\n${result.join("\n")}`);
     }
   );

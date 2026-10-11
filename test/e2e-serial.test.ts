@@ -126,6 +126,29 @@ describe("serial tools with a fake board", { skip: !supported }, () => {
     assert.match(r.text, /pins monitor port \/dev\/ttyGONE7 for this sketch, but it is not connected/);
   });
 
+  test("a silent ESP32 native USB port explains USB CDC On Boot", async () => {
+    const silent = await startFakeBoard({ silent: true });
+    try {
+      fs.writeFileSync(path.join(sb.dir, "board-list.json"), JSON.stringify({
+        detected_ports: [{ port: { address: silent.port, protocol: "serial", properties: { vid: "0x303a", pid: "0x1001", serialNumber: "S3N" } },
+          matching_boards: [{ name: "ESP32S3 Dev Module", fqbn: "esp32:esp32:esp32s3" }] }],
+      }));
+      let r = await mcp.call("detect_board", { port: silent.port });
+      assert.match(r.text, /native USB port: Serial only prints there with "USB CDC On Boot" enabled/);
+      r = await mcp.call("serial_monitor", { port: silent.port, seconds: 1 });
+      assert.match(r.text, /no data received/);
+      assert.match(r.text, /cdc_on_boot=cdc/);
+
+      await mcp.call("board_config", { action: "set", cdc_on_boot: "cdc" });
+      r = await mcp.call("serial_monitor", { port: silent.port, seconds: 1 });
+      assert.doesNotMatch(r.text, /cdc_on_boot/);
+      r = await mcp.call("detect_board", { port: silent.port });
+      assert.doesNotMatch(r.text, /USB CDC On Boot/);
+    } finally {
+      silent.proc.kill();
+    }
+  });
+
   test("invalid and missing ports are reported", async () => {
     let r = await mcp.call("serial_monitor", { port: "/dev/ttyDOESNOTEXIST9", seconds: 1 });
     assert.equal(r.isError, true);

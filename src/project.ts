@@ -1,139 +1,113 @@
 /**
- * Arduino Project System
- * Supports multi-file sketches, project config (arduino-mcp.yaml),
- * and external library dependencies.
+ * Arduino project system: per-sketch config (arduino-mcp.yaml) and
+ * multi-file sketches.
  */
 import * as fs from "fs/promises";
 import * as path from "path";
-import * as os from "os";
+import { parse, stringify } from "yaml";
+import { resolveInside, sketchDir, UserError } from "./lib/validate.js";
 
 export interface ArduinoProject {
   name: string;
+  description?: string;
+  version?: string;
   fqbn?: string;
   upload_port?: string;
   monitor_port?: string;
   baud?: number;
   libraries?: string[];
   build_flags?: string[];
-  description?: string;
-  version?: string;
 }
 
-const SKETCHES_DIR = process.env.ARDUINO_SKETCHES_DIR || path.join(os.homedir(), "Arduino");
-const CONFIG_FILENAME = "arduino-mcp.yaml";
+export const CONFIG_FILENAME = "arduino-mcp.yaml";
+const SOURCE_EXTS = new Set([".ino", ".h", ".hpp", ".c", ".cpp", ".S"]);
+const EXTRA_FILES = new Set([CONFIG_FILENAME, "wiring.md", "wiring.svg"]);
 
-// Minimal YAML parser for our simple config format
-function parseYaml(content: string): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const lines = content.split("\n");
-  let currentKey = "";
-  let currentArray: string[] = [];
-  let inArray = false;
+const optString = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : String(v));
+const optStringList = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
 
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (!line || line.startsWith("#")) continue;
+export async function readProjectConfig(sketchName: string): Promise<ArduinoProject | null> {
+  const file = path.join(sketchDir(sketchName), CONFIG_FILENAME);
+  let content: string;
+  try {
+    content = await fs.readFile(file, "utf-8");
+  } catch {
+    return null;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = (parse(content) ?? {}) as Record<string, unknown>;
+  } catch (e) {
+    throw new UserError(`${CONFIG_FILENAME} in "${sketchName}" is not valid YAML: ${(e as Error).message}`);
+  }
+  const baud = parsed.baud === undefined ? undefined : Number(parsed.baud);
+  return {
+    name: sketchName,
+    description: optString(parsed.description),
+    version: optString(parsed.version),
+    fqbn: optString(parsed.fqbn),
+    upload_port: optString(parsed.upload_port),
+    monitor_port: optString(parsed.monitor_port),
+    baud: baud !== undefined && Number.isFinite(baud) ? baud : undefined,
+    libraries: optStringList(parsed.libraries),
+    build_flags: optStringList(parsed.build_flags),
+  };
+}
 
-    const arrayItem = line.match(/^  - (.+)$/);
-    if (arrayItem && inArray) {
-      currentArray.push(arrayItem[1].trim());
-      continue;
+export function projectToYaml(config: ArduinoProject): string {
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(config)) {
+    if (v === undefined || v === null || (Array.isArray(v) && v.length === 0)) continue;
+    clean[k] = v;
+  }
+  return "# arduino-mcp project config\n" + stringify(clean);
+}
+
+export async function writeProjectConfig(sketchName: string, config: ArduinoProject): Promise<string> {
+  const dir = sketchDir(sketchName);
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, CONFIG_FILENAME);
+  await fs.writeFile(file, projectToYaml(config), "utf-8");
+  return file;
+}
+
+/** Lists source files, including Arduino's recursive src/ folder. */
+export async function listProjectFiles(sketchName: string): Promise<string[]> {
+  const root = sketchDir(sketchName);
+  const out: string[] = [];
+  async function walk(dir: string, depth: number): Promise<void> {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
-
-    if (inArray) {
-      result[currentKey] = currentArray;
-      inArray = false;
-      currentArray = [];
-    }
-
-    const kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$/);
-    if (kvMatch) {
-      currentKey = kvMatch[1];
-      const val = kvMatch[2].trim();
-      if (val === "" || val === "[]") {
-        currentArray = [];
-        inArray = val === "" ? false : false;
-        if (val === "") {
-          inArray = true;
-          currentArray = [];
-        }
-      } else {
-        result[currentKey] = val.replace(/^["']|["']$/g, "");
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (depth < 4) await walk(full, depth + 1);
+      } else if (SOURCE_EXTS.has(path.extname(e.name)) || (depth === 0 && EXTRA_FILES.has(e.name))) {
+        out.push(path.relative(root, full).split(path.sep).join("/"));
       }
     }
   }
-
-  if (inArray) result[currentKey] = currentArray;
-  return result;
-}
-
-// Minimal YAML serializer
-function toYaml(obj: ArduinoProject): string {
-  const lines: string[] = ["# arduino-mcp project config", "# https://github.com/birusk/arduino-mcp", ""];
-  for (const [key, val] of Object.entries(obj)) {
-    if (val === undefined || val === null) continue;
-    if (Array.isArray(val)) {
-      if (val.length === 0) continue;
-      lines.push(`${key}:`);
-      for (const item of val) lines.push(`  - ${item}`);
-    } else {
-      lines.push(`${key}: ${val}`);
-    }
-  }
-  return lines.join("\n") + "\n";
-}
-
-export async function readProjectConfig(sketchName: string): Promise<ArduinoProject | null> {
-  const configPath = path.join(SKETCHES_DIR, sketchName, CONFIG_FILENAME);
-  try {
-    const content = await fs.readFile(configPath, "utf-8");
-    const parsed = parseYaml(content);
-    return {
-      name: sketchName,
-      fqbn: parsed.fqbn as string | undefined,
-      upload_port: parsed.upload_port as string | undefined,
-      monitor_port: parsed.monitor_port as string | undefined,
-      baud: parsed.baud ? parseInt(parsed.baud as string) : undefined,
-      libraries: parsed.libraries as string[] | undefined,
-      build_flags: parsed.build_flags as string[] | undefined,
-      description: parsed.description as string | undefined,
-      version: parsed.version as string | undefined,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function writeProjectConfig(sketchName: string, config: ArduinoProject): Promise<void> {
-  const dir = path.join(SKETCHES_DIR, sketchName);
-  await fs.mkdir(dir, { recursive: true });
-  const configPath = path.join(dir, CONFIG_FILENAME);
-  await fs.writeFile(configPath, toYaml(config), "utf-8");
-}
-
-export async function listProjectFiles(sketchName: string): Promise<string[]> {
-  const dir = path.join(SKETCHES_DIR, sketchName);
-  try {
-    const entries = await fs.readdir(dir);
-    return entries.filter((f) =>
-      f.endsWith(".ino") || f.endsWith(".h") || f.endsWith(".cpp") || f.endsWith(".c") || f === CONFIG_FILENAME
-    );
-  } catch {
-    return [];
-  }
+  await walk(root, 0);
+  return out.sort();
 }
 
 export async function readProjectFile(sketchName: string, filename: string): Promise<string | null> {
-  const filePath = path.join(SKETCHES_DIR, sketchName, filename);
+  const file = resolveInside(sketchDir(sketchName), filename);
   try {
-    return await fs.readFile(filePath, "utf-8");
+    return await fs.readFile(file, "utf-8");
   } catch {
     return null;
   }
 }
 
-export async function writeProjectFile(sketchName: string, filename: string, content: string): Promise<void> {
-  const dir = path.join(SKETCHES_DIR, sketchName);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, filename), content, "utf-8");
+export async function writeProjectFile(sketchName: string, filename: string, content: string): Promise<string> {
+  const file = resolveInside(sketchDir(sketchName), filename);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, content, "utf-8");
+  return file;
 }

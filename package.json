@@ -1,7 +1,7 @@
 {
   "name": "arduino-mcp",
-  "version": "3.4.0",
-  "description": "Universal MCP server for Arduino IDE & arduino-cli — compile, upload, monitor any board (ESP32, Uno, Mega, RP2040) via AI",
+  "version": "4.0.0",
+  "description": "MCP server for Arduino via arduino-cli — compile, upload, monitor and wire up any board (Uno, Mega, Nano, ESP32, ESP8266, RP2040) from an AI assistant",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -11,7 +11,9 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "mcp",
@@ -30,14 +32,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/birusk/arduino-mcp.git"
+    "url": "git+https://github.com/biyusku/arduino-mcp.git"
   },
-  "homepage": "https://github.com/birusk/arduino-mcp#readme",
+  "homepage": "https://github.com/biyusku/arduino-mcp#readme",
   "bugs": {
-    "url": "https://github.com/birusk/arduino-mcp/issues"
+    "url": "https://github.com/biyusku/arduino-mcp/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "files": [
     "dist/**/*",
@@ -46,6 +48,8 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "serialport": "^13.0.0",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {

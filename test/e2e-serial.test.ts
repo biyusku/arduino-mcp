@@ -1,0 +1,133 @@
+/**
+ * End-to-end serial tests against a fake board on a pseudo-terminal.
+ * Linux only (needs python3; CI and most dev machines have it).
+ */
+import assert from "node:assert/strict";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { after, before, describe, test } from "node:test";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
+import { commandExists } from "../src/lib/exec.js";
+import { connect, makeSandbox, ROOT, SERVER_ARGS, startFakeBoard, type Sandbox } from "./helpers.js";
+
+const supported = process.platform === "linux" && commandExists("python3");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("serial tools with a fake board", { skip: !supported }, () => {
+  let sb: Sandbox;
+  let board: { port: string; proc: ChildProcessWithoutNullStreams };
+  let mcp: Awaited<ReturnType<typeof connect>>;
+
+  before(async () => {
+    sb = makeSandbox();
+    board = await startFakeBoard();
+    mcp = await connect(sb);
+  });
+  after(async () => {
+    await mcp.close();
+    board.proc.kill();
+  });
+
+  test("one-shot read and send (no background session)", async () => {
+    let r = await mcp.call("serial_monitor", { port: board.port, seconds: 1 });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /tick \d+/);
+
+    r = await mcp.call("send_serial", { port: board.port, message: "hello", response_seconds: 0.5 });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /ECHO:hello/);
+  });
+
+  test("background session: read, send through it, monitor through it", async () => {
+    let r = await mcp.call("serial_start", { port: board.port });
+    assert.match(r.text, /Started on/);
+    await sleep(700);
+
+    r = await mcp.call("serial_read", { port: board.port, lines: 5 });
+    assert.match(r.text, /tick \d+/);
+
+    r = await mcp.call("send_serial", { port: board.port, message: "LED_ON", response_seconds: 0.5 });
+    assert.match(r.text, /ECHO:LED_ON/);
+
+    r = await mcp.call("serial_monitor", { port: board.port, seconds: 1 });
+    assert.match(r.text, /tick \d+/);
+
+    r = await mcp.call("serial_status");
+    assert.match(r.text, new RegExp(`${board.port}\\s+@ 115200 baud`));
+  });
+
+  test("upload pauses and resumes the session and shows the real upload error", async () => {
+    await mcp.call("create_sketch", { name: "up", template: "blink" });
+    const r = await mcp.call("upload_sketch", { name: "up", fqbn: "arduino:avr:uno", port: board.port, free_port: false });
+    assert.match(r.text, /Upload failed/);
+    assert.match(r.text, /avrdude: ser_open\(\): can't open device/); // was hidden before
+    assert.match(r.text, /Serial session on .* resumed/);
+    const status = await mcp.call("serial_status");
+    assert.match(status.text, new RegExp(board.port));
+  });
+
+  test("serial_stop", async () => {
+    let r = await mcp.call("serial_stop", { port: board.port });
+    assert.match(r.text, /Stopped/);
+    r = await mcp.call("serial_read", { port: board.port });
+    assert.match(r.text, /No background session/);
+  });
+
+  test("invalid and missing ports are reported", async () => {
+    let r = await mcp.call("serial_monitor", { port: "/dev/ttyDOESNOTEXIST9", seconds: 1 });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /not found/);
+    r = await mcp.call("serial_start", { port: "/home/x; id" });
+    assert.equal(r.isError, true);
+  });
+});
+
+describe("process lifecycle", { skip: !supported }, () => {
+  test("server exits when the client closes stdin, even with an open serial session", async () => {
+    const board = await startFakeBoard();
+    const sb = makeSandbox();
+    const child = spawn(process.execPath, SERVER_ARGS, { cwd: ROOT, env: sb.env, stdio: ["pipe", "pipe", "pipe"] });
+    const responses = new Map<number, unknown>();
+    let buf = "";
+    child.stdout.on("data", (d: Buffer) => {
+      buf += d.toString();
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const msg = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (msg.id !== undefined) responses.set(msg.id, msg);
+      }
+    });
+    const send = (msg: object) => child.stdin.write(JSON.stringify(msg) + "\n");
+    const waitFor = async (id: number) => {
+      for (let i = 0; i < 100 && !responses.has(id); i++) await sleep(100);
+      return responses.get(id) as { result?: { content: Array<{ text: string }> } };
+    };
+
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+    await waitFor(1);
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "serial_start", arguments: { port: board.port } } });
+    const started = await waitFor(2);
+    assert.match(started.result!.content[0].text, /Started on/);
+
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    child.stdin.end();
+    const code = await Promise.race([exited, sleep(5000).then(() => "timeout" as const)]);
+    board.proc.kill();
+    if (code === "timeout") child.kill("SIGKILL");
+    assert.equal(code, 0);
+  });
+});
+
+describe("releasePort", { skip: !supported || !commandExists("lsof") }, () => {
+  test("stops another process that holds the port, never ourselves", async () => {
+    const { releasePort } = await import("../src/lib/ports.js");
+    const holder = await startFakeBoard(); // this python process keeps its pty open
+    const exited = new Promise((resolve) => holder.proc.once("exit", resolve));
+    const stopped = await releasePort(holder.port);
+    assert.equal(stopped.length, 1, JSON.stringify(stopped));
+    assert.match(stopped[0], new RegExp(`pid ${holder.proc.pid}`));
+    await exited;
+    await assert.rejects(releasePort("/home/me/.bashrc"), /Invalid serial port/);
+  });
+});

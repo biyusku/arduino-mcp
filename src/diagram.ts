@@ -5,15 +5,15 @@
  */
 
 export interface PinConnection {
-  from: string;      // ör: "Arduino D2", "ESP32 GPIO4"
-  to: string;        // ör: "DHT11 DATA", "LED Anode"
-  wire?: string;     // ör: "yellow", "red", "black"
-  note?: string;     // ör: "10k pull-up", "330 ohm resistor"
+  from: string;      // e.g. "Arduino D2", "ESP32 GPIO4"
+  to: string;        // e.g. "DHT11 DATA", "LED Anode"
+  wire?: string;     // e.g. "yellow", "red", "black"
+  note?: string;     // e.g. "10k pull-up", "330 ohm resistor"
 }
 
 export interface Component {
   name: string;
-  type: string;      // ör: "microcontroller", "sensor", "actuator", "passive"
+  type: string;      // e.g. "microcontroller", "sensor", "actuator", "passive"
   pins: string[];
   color?: string;
 }
@@ -52,18 +52,24 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/** Escapes text for a Markdown table cell. */
+function escapeCell(s: string): string {
+  return s.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
 export function generateSvg(diagram: CircuitDiagram): string {
   const W = 900;
   const compW = 160;
-  const compH = Math.max(120, 30 + Math.max(...diagram.components.map((c) => c.pins.length)) * 22);
-  const cols = Math.min(diagram.components.length, 4);
+  const maxPins = Math.max(0, ...diagram.components.map((c) => c.pins.length));
+  const compH = Math.max(120, 30 + maxPins * 22);
+  const cols = Math.max(1, Math.min(diagram.components.length, 4));
   const rows = Math.ceil(diagram.components.length / cols);
   const hGap = 80;
   const vGap = 60;
-  const padX = 40;
   const padY = 60;
 
-  const H = padY + rows * (compH + vGap) + diagram.connections.length * 20 + 80;
+  const notesH = diagram.notes?.length ? 30 : 0;
+  const H = padY + rows * (compH + vGap) + 10 + 36 + diagram.connections.length * 22 + notesH + 20;
 
   const svgParts: string[] = [];
   svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="background:#1a1a2e;font-family:monospace">`);
@@ -101,7 +107,7 @@ export function generateSvg(diagram: CircuitDiagram): string {
 
   // Draw connections table below components
   const tableY = padY + rows * (compH + vGap) + 10;
-  svgParts.push(`<text x="40" y="${tableY + 16}" fill="#e0e0e0" font-size="13" font-weight="bold">Bağlantılar:</text>`);
+  svgParts.push(`<text x="40" y="${tableY + 16}" fill="#e0e0e0" font-size="13" font-weight="bold">Connections:</text>`);
 
   diagram.connections.forEach((conn, i) => {
     const cy = tableY + 36 + i * 22;
@@ -130,24 +136,24 @@ export function generateMarkdownTable(diagram: CircuitDiagram): string {
   const lines: string[] = [
     `## ${diagram.title}`,
     "",
-    "### Bileşenler",
+    "### Components",
     "",
-    "| Bileşen | Tip | Pinler |",
-    "|---------|-----|--------|",
+    "| Component | Type | Pins |",
+    "|-----------|------|------|",
   ];
 
   for (const comp of diagram.components) {
-    lines.push(`| **${comp.name}** | ${comp.type} | ${comp.pins.join(", ")} |`);
+    lines.push(`| **${escapeCell(comp.name)}** | ${escapeCell(comp.type)} | ${escapeCell(comp.pins.join(", "))} |`);
   }
 
-  lines.push("", "### Bağlantılar", "", "| Kaynak | Hedef | Kablo | Not |", "|--------|-------|-------|-----|");
+  lines.push("", "### Connections", "", "| From | To | Wire | Note |", "|------|----|------|------|");
 
   for (const conn of diagram.connections) {
-    lines.push(`| ${conn.from} | ${conn.to} | ${conn.wire || "—"} | ${conn.note || "—"} |`);
+    lines.push(`| ${escapeCell(conn.from)} | ${escapeCell(conn.to)} | ${escapeCell(conn.wire || "—")} | ${escapeCell(conn.note || "—")} |`);
   }
 
   if (diagram.notes && diagram.notes.length > 0) {
-    lines.push("", "### Notlar", "");
+    lines.push("", "### Notes", "");
     for (const note of diagram.notes) {
       lines.push(`> ⚠️ ${note}`);
     }
@@ -156,16 +162,17 @@ export function generateMarkdownTable(diagram: CircuitDiagram): string {
   return lines.join("\n");
 }
 
-// Parse natural language connection descriptions
+// Parses one connection per line:
+//   "FROM -> TO [wire:COLOR] [note:TEXT]"   (also "→", "=>" or " to ")
+// The arrow word "to" must stand alone, so names like "Button" or "Motor" are safe.
+const CONNECTION_RE = /^(.+?)(?:\s*(?:->|→|=>)\s*|\s+to\s+)(.+?)(?:\s+wire:(\S+))?(?:\s+note:(.+))?$/i;
+
 export function parseConnections(text: string): PinConnection[] {
   const connections: PinConnection[] = [];
-  const lines = text.split("\n").filter((l) => l.trim());
-
-  for (const line of lines) {
-    // Format: "FROM -> TO [wire:COLOR] [note:NOTE]"
-    // or: "FROM → TO"
-    // or: "FROM to TO"
-    const match = line.match(/^(.+?)\s*(?:->|→|to|TO)\s*(.+?)(?:\s+wire:(\w+))?(?:\s+note:(.+))?$/i);
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const match = line.match(CONNECTION_RE);
     if (match) {
       connections.push({
         from: match[1].trim(),
@@ -175,6 +182,28 @@ export function parseConnections(text: string): PinConnection[] {
       });
     }
   }
-
   return connections;
+}
+
+const MCU_RE = /^(arduino|uno|nano|mega|leonardo|micro|esp32|esp8266|nodemcu|wemos|pico|rp2040|stm32|teensy|samd|mkr|xiao)/i;
+const POWER_RE = /^(battery|bat|psu|power|vin|vcc|5v|3v3|gnd|usb)/i;
+
+/** Builds components from "COMPONENT PIN" endpoints (first word = component). */
+export function componentsFromConnections(connections: PinConnection[]): Component[] {
+  const pinsByComp = new Map<string, Set<string>>();
+  const add = (endpoint: string) => {
+    const [comp, ...rest] = endpoint.split(/\s+/);
+    if (!pinsByComp.has(comp)) pinsByComp.set(comp, new Set());
+    const pin = rest.join(" ");
+    if (pin) pinsByComp.get(comp)!.add(pin);
+  };
+  for (const c of connections) {
+    add(c.from);
+    add(c.to);
+  }
+  return [...pinsByComp].map(([name, pins]) => ({
+    name,
+    type: MCU_RE.test(name) ? "microcontroller" : POWER_RE.test(name) ? "power" : "sensor",
+    pins: [...pins],
+  }));
 }
